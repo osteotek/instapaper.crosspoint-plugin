@@ -153,16 +153,25 @@ export function articleContent(doc, title, browserLanguage, options) {
 
 // `files[i]` is {data, mime, ext} for content.images[i], or null to drop it.
 // Returns the content with <img> elements in place and `imageFiles` to pack.
-export function placeImages(content, files) {
+// `cover` ({data, mime, ext}, optional) is packed as the book's cover; it is
+// not shown in the text.
+export function placeImages(content, files, cover) {
   const imageFiles = [];
+  const fileFor = (n) => {
+    const href = 'images/' + (n + 1) + '.' + files[n].ext;
+    let entry = imageFiles.find((f) => f.href === href);
+    if (!entry) {
+      entry = { href, mime: files[n].mime, data: files[n].data };
+      imageFiles.push(entry);
+    }
+    return entry;
+  };
   const body = content.body.replace(IMAGE_MARKER, (marker, n, kind) => {
-    const file = files[Number(n)];
-    if (!file) return '';
-    const href = 'images/' + (Number(n) + 1) + '.' + file.ext;
-    if (!imageFiles.some((f) => f.href === href)) imageFiles.push({ href, mime: file.mime, data: file.data });
-    const img = '<img src="' + href + '" alt="' + escapeXml(content.images[n].alt || '') + '"/>';
+    if (!files[Number(n)]) return '';
+    const img = '<img src="' + fileFor(Number(n)).href + '" alt="' + escapeXml(content.images[n].alt || '') + '"/>';
     return kind === 'i' ? img : '<p>' + img + '</p>';
   });
+  if (cover) imageFiles.push({ href: 'images/cover.' + cover.ext, mime: cover.mime, data: cover.data, cover: true });
   return Object.assign({}, content, { body, imageFiles });
 }
 
@@ -231,6 +240,9 @@ export function epubFiles(article, content, modified) {
     article.pubtime ? '<dc:date>' + new Date(article.pubtime * 1000).toISOString().slice(0, 10) + '</dc:date>' : '',
     '<meta property="dcterms:modified">' + modified + '</meta>',
   ].filter(Boolean);
+  // The reader takes the cover from either form (ContentOpfParser).
+  const coverIndex = imageFiles.findIndex((f) => f.cover);
+  if (coverIndex >= 0) metadata.push('<meta name="cover" content="image' + (coverIndex + 1) + '"/>');
   const xhtml = (body) =>
     '<?xml version="1.0" encoding="UTF-8"?>\n<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="' +
     lang +
@@ -263,7 +275,20 @@ export function epubFiles(article, content, modified) {
         '<item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>\n' +
         '<item id="article" href="article.xhtml" media-type="application/xhtml+xml"/>\n' +
         '<item id="end" href="end.xhtml" media-type="application/xhtml+xml"/>\n' +
-        imageFiles.map((f, i) => '<item id="image' + (i + 1) + '" href="' + f.href + '" media-type="' + f.mime + '"/>\n').join('') +
+        imageFiles
+          .map(
+            (f, i) =>
+              '<item id="image' +
+              (i + 1) +
+              '" href="' +
+              f.href +
+              '" media-type="' +
+              f.mime +
+              '"' +
+              (f.cover ? ' properties="cover-image"' : '') +
+              '/>\n',
+          )
+          .join('') +
         '</manifest>\n<spine toc="ncx"' +
         (article.rtl ? ' page-progression-direction="rtl"' : '') +
         '><itemref idref="article"/><itemref idref="end"/></spine>\n</package>\n',
@@ -390,22 +415,54 @@ export function buildEpub(article, content, now) {
   const modified = new Date(now).toISOString().replace(/\.\d+Z$/, 'Z');
   return zip(epubFiles(article, content, modified));
 }
-// FAT-safe file name without the extension. Characters FAT rejects become
-// spaces; trailing dots and spaces are dropped because FAT ignores them.
-export function fileBaseName(title, bookmarkId) {
-  const clean = normalizeSpace(String(title || '').replace(/[\\/:*?"<>|\u0000-\u001F\u007F]/g, ' '));
-  const short = Array.from(clean).slice(0, 60).join('').replace(/[. ]+$/, '');
-  return short || 'Article ' + bookmarkId;
+
+// The name the reader's catalog gives a download of `title`
+// (StringUtils::sanitizeFilenamePreservingExtension("{title}.epub", 100)), so
+// the web sync and the reader write the same file. Leading spaces and dots
+// are skipped, FAT's reserved characters become '_', control characters are
+// dropped, the stem is cut at a whole character within 95 bytes, and
+// trailing spaces and dots are trimmed.
+// `suffix` (such as " (123)") is kept whole, after the stem.
+export function readerFileName(title, suffix = '') {
+  const STEM_BYTES = 100 - '.epub'.length - utf8Encoder.encode(suffix).length;
+  let stem = '';
+  let bytes = 0;
+  const chars = Array.from(String(title || '').replace(/^[ .]+/, ''));
+  for (const ch of chars) {
+    const cp = ch.codePointAt(0);
+    let piece;
+    if ('/\\:*?"<>|'.includes(ch)) piece = '_';
+    else if (cp >= 128 || (cp >= 32 && cp < 127)) piece = ch;
+    else continue;
+    const size = utf8Encoder.encode(piece).length;
+    if (bytes + size > STEM_BYTES) break;
+    stem += piece;
+    bytes += size;
+  }
+  stem = stem.replace(/[ .]+$/, '');
+  return (stem || 'book') + suffix + '.epub';
+}
+
+// A page title without a trailing " — Site", " | Site" or " - Site" that
+// names the article's own site ("… — Meduza" on meduza.io).
+export function withoutSiteSuffix(title, url) {
+  const match = /^(.+?)\s+[-–—|·]\s+([^-–—|·]{1,40})$/.exec(normalizeSpace(title));
+  if (!match) return normalizeSpace(title);
+  const letters = (text) => text.toLowerCase().replace(/[^a-z0-9]/g, '');
+  const suffix = letters(match[2]);
+  const site = letters(siteName(url).replace(/\.[a-z]+$/i, ''));
+  return suffix && site && (site.startsWith(suffix) || suffix.startsWith(site)) ? match[1] : normalizeSpace(title);
 }
 
 // The article fields epubFiles() needs, from a bookmark (any of id, title,
-// url, author, description, pubtime) and its /parse response.
+// url, author, description, pubtime) and its /parse response. The bookmark's
+// title is the one Instapaper lists; the parsed one is the page's own title.
 export function articleFromParse(bookmark, parsed) {
   const meta = parsed.metadata || {};
   const content = parsed.content || {};
   return {
     id: bookmark.id,
-    title: bookmark.title || meta.title || '',
+    title: bookmark.title || withoutSiteSuffix(meta.title || '', bookmark.url),
     author: (meta.author && meta.author.name) || bookmark.author || '',
     site: siteName(bookmark.url),
     url: bookmark.url || '',

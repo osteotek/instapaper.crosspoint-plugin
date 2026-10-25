@@ -21,11 +21,36 @@ export const TRANSFORM = {
   background: '#FFFFFF',
 };
 
-// Free plan: 50 subrequests per request, and one goes to Instapaper.
-const MAX_SUBREQUESTS = 48;
+// The book cover, for the reader's cover screen and thumbnails, which it
+// renders at the portrait screen size (JpegToBmpConverter::jpegFileToBmpStream).
+// 528 x 800 holds the largest portrait screen of the supported boards
+// (X3: 528 x 792, X4: 480 x 800); the reader scales it down for smaller ones.
+// The crop keeps the most important part of the image.
+export const COVER_TRANSFORM = {
+  width: 528,
+  height: 800,
+  fit: 'cover',
+  gravity: 'auto',
+  format: 'baseline-jpeg',
+  saturation: 0,
+  quality: 75,
+  sharpen: 1,
+  metadata: 'none',
+  anim: false,
+  background: '#FFFFFF',
+};
+
+// Free plan: 50 subrequests per request: one goes to Instapaper and up to
+// two to the cover.
+const MAX_SUBREQUESTS = 46;
 const MAX_IMAGES = 30;
 const CONCURRENCY = 6;
 const TIMEOUT_MS = 10000;
+// Slow image hosts must not hold up the article: image fetching stops after
+// IMAGES_BUDGET_MS and the cover gets COVER_BUDGET_MS more, then the EPUB is
+// sent with what arrived.
+const IMAGES_BUDGET_MS = 15000;
+const COVER_BUDGET_MS = 8000;
 // Limits for originals kept without transformation. The CRC over every byte
 // is the Worker's main CPU cost, and large images decode slowly on the reader.
 const MAX_ORIGINAL_BYTES = 1024 * 1024;
@@ -33,6 +58,9 @@ const MAX_TOTAL_BYTES = 3 * 1024 * 1024;
 // Reader decoder limits (platformio.ini: MAX_WIDTH, PNG_MAX_BUFFERED_PIXELS).
 const MAX_GIF_WIDTH = 3072;
 const MAX_PNG_WIDTH = 4096;
+// The cover converter's limits (JpegToBmpConverter.cpp).
+const MAX_COVER_WIDTH = 2048;
+const MAX_COVER_HEIGHT = 3072;
 // Smaller images are icons and avatars.
 const MIN_SIDE = 120;
 
@@ -100,11 +128,13 @@ export function readerCanShow(info, size) {
   return size <= MAX_ORIGINAL_BYTES;
 }
 
-async function download(fetchImpl, url, referer, transform) {
+async function download(fetchImpl, url, referer, transform, deadline) {
+  const timeout = Math.min(TIMEOUT_MS, deadline - Date.now());
+  if (timeout <= 0) return null;
   const headers = { Accept: 'image/jpeg,image/png,image/gif;q=0.9,image/*;q=0.5' };
   if (referer) headers.Referer = referer;
-  const init = { headers, signal: AbortSignal.timeout(TIMEOUT_MS) };
-  if (transform) init.cf = { image: TRANSFORM };
+  const init = { headers, signal: AbortSignal.timeout(timeout) };
+  if (transform) init.cf = { image: transform === true ? TRANSFORM : transform };
   try {
     const response = await fetchImpl(url, init);
     if (!response.ok) {
@@ -125,20 +155,21 @@ async function download(fetchImpl, url, referer, transform) {
 
 // `images` is content.images ([{url, alt}]). Returns {files, stats}, where
 // files[i] is {data, mime, ext} or null, as placeImages() expects.
-export async function fetchImages(images, referer, fetchImpl = fetch) {
+export async function fetchImages(images, referer, fetchImpl = fetch, budgetMs = IMAGES_BUDGET_MS) {
   const files = new Array(images.length).fill(null);
   const stats = { found: images.length, kept: 0, converted: 0 };
   let subrequests = 0;
   let total = 0;
+  const deadline = Date.now() + budgetMs;
 
   const fetchOne = async (index) => {
     subrequests++;
-    let got = await download(fetchImpl, images[index].url, referer, true);
+    let got = await download(fetchImpl, images[index].url, referer, true, deadline);
     let info = got && imageInfo(got.data);
     // No usable result from the transformation: try the original once.
     if (!(info && readerCanShow(info, got.data.length)) && subrequests < MAX_SUBREQUESTS) {
       subrequests++;
-      got = await download(fetchImpl, images[index].url, referer, false);
+      got = await download(fetchImpl, images[index].url, referer, false, deadline);
       info = got && imageInfo(got.data);
     }
     if (!(info && readerCanShow(info, got.data.length))) return;
@@ -151,8 +182,39 @@ export async function fetchImages(images, referer, fetchImpl = fetch) {
 
   const queue = images.slice(0, MAX_IMAGES).map((_, i) => i);
   const workers = Array.from({ length: Math.min(CONCURRENCY, queue.length) }, async () => {
-    while (queue.length && subrequests < MAX_SUBREQUESTS) await fetchOne(queue.shift());
+    while (queue.length && subrequests < MAX_SUBREQUESTS && Date.now() < deadline) await fetchOne(queue.shift());
   });
   await Promise.all(workers);
   return { files, stats };
+}
+
+// The cover for `url`: converted to COVER_TRANSFORM, or else the original
+// when it is a baseline JPEG the reader's cover converter takes (progressive
+// JPEG decodes there at 1/8 detail). Null when neither works.
+export async function fetchCover(url, referer, fetchImpl = fetch) {
+  const deadline = Date.now() + COVER_BUDGET_MS;
+  let got = await download(fetchImpl, url, referer, COVER_TRANSFORM, deadline);
+  let info = got && imageInfo(got.data);
+  const converted =
+    !!got &&
+    got.resized &&
+    !!info &&
+    info.type === 'jpeg' &&
+    !info.progressive &&
+    info.width <= COVER_TRANSFORM.width &&
+    info.height <= COVER_TRANSFORM.height;
+  if (!converted) {
+    got = await download(fetchImpl, url, referer, false, deadline);
+    info = got && imageInfo(got.data);
+    const usable =
+      info &&
+      info.type === 'jpeg' &&
+      !info.progressive &&
+      info.width <= MAX_COVER_WIDTH &&
+      info.height <= MAX_COVER_HEIGHT &&
+      Math.max(info.width, info.height) >= MIN_SIDE &&
+      got.data.length <= MAX_ORIGINAL_BYTES;
+    if (!usable) return null;
+  }
+  return { data: got.data, mime: 'image/jpeg', ext: 'jpg', width: info.width, height: info.height, resized: converted };
 }

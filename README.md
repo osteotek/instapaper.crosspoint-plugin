@@ -117,8 +117,28 @@ banner, which the web card checks before saving the address.
   kept only when the reader can decode it (JPEG, PNG up to 4,096 px wide,
   non-interlaced GIF up to 3,072 px) and it is under 1 MB. At most 30 images
   and 3 MB of originals per article, within the free plan's 50 subrequests.
-  Images are stored in the ZIP without compression. The `X-Images` response
-  header reports how many were found, kept and converted.
+  Images are stored in the ZIP without compression. Image fetching stops
+  after 15 seconds and the cover after 8 more, so a slow image host cannot
+  hold up the article. The `X-Images` response header reports how many were
+  found, kept and converted, and the cover.
+- **Cover.** The reader renders an EPUB's cover at its portrait screen size
+  (`JpegToBmpConverter::jpegFileToBmpStream`) for the cover screen and Home
+  thumbnails, and takes JPEGs up to 2048 x 3072, progressive ones at 1/8
+  detail. The Worker fetches the lead image (`metadata.thumbnail`, else the
+  first kept image) once more as a 528 x 800 grayscale baseline JPEG with
+  `fit: "cover"` and `gravity: "auto"`, which holds the largest portrait
+  screen (X3: 528 x 792); the reader scales it down for smaller ones. If
+  Cloudflare does not convert it, the original is used only when it is a
+  baseline JPEG within those limits and under 1 MB. The cover is a separate
+  `images/cover.jpg` marked both ways the reader reads
+  (`properties="cover-image"` and `<meta name="cover">`).
+- **Titles.** The reader cannot pass the listed title to the Worker:
+  templates are substituted unencoded and the firmware sends the URL path
+  as is (`SecureHttpClient::parseUrl`), so spaces would break the request,
+  and Instapaper has no endpoint for one bookmark (`GET /bookmarks/{id}` is
+  405). Reader downloads therefore use the parsed page title without a
+  trailing " — Site" that matches the article's site; the web sync sends the
+  listed title, encoded, as `&title=` before the raw `url`.
 - **CPU.** The free plan allows about 10 ms of CPU per request. HTML parsing
   is cheap (1 ms for a 60 KB body); deflating the text and the CRC-32 over
   every image byte cost the most, so the CRC is slice-by-4 (about 1.5 ms per
@@ -139,8 +159,25 @@ banner, which the web card checks before saving the address.
   line break, and a top-level block holding text becomes a paragraph, so words
   do not run together. Entries are deflated with `CompressionStream` when the
   browser has it, because `/api/plugin-fs` accepts at most 256 KB.
-- **State.** `state.json` in the plugin folder maps each bookmark ID to its
-  file and folder. Only files listed there are ever deleted.
+- **State and names.** Every download, from the web sync or the reader's
+  catalog, writes `<file>.meta.json` with `instapaper_id`. The web sync scans
+  `/Instapaper/` for those sidecars, so it knows reader downloads too, and
+  names files with `readerFileName()`, a copy of
+  `StringUtils::sanitizeFilenamePreservingExtension("{title}.epub", 100)`.
+  A different file by that name gets ` (<id>)` instead of being replaced.
+  `state.json` caches the ID-to-file map, the archive check's `since`, and
+  the keys of highlights already sent; only files with a sidecar are ever
+  deleted.
+- **Archive check.** `GET /bookmarks?since=` returns everything changed since
+  then, across all sections, with `deleted_ids`, paged by offset. Archived or
+  deleted IDs among the articles on the card are deleted, except those in
+  the folder being synced. `since` is saved five minutes early, so the next
+  check overlaps rather than misses.
+- **Highlights.** The card reads `/.crosspoint/clippings/epub_*.bin`
+  (`ClippingStore`, versions 1 to 4), finds each book's `instapaper_id` from
+  its sidecar, and posts each passage to `POST /bookmarks/{id}/highlights`
+  through the relay. 400 means Instapaper already has it; 403 is the free
+  plan's five-a-month limit and stops the run.
 - **Language.** The parse response has no language. The plugin uses the
   dominant script (Cyrillic, Greek, Hebrew, Arabic, CJK), else the browser's
   language when it uses Latin script, else English.
@@ -194,6 +231,14 @@ running the firmware at `72ca92fe`. The browser was jsdom; `PluginHost.js.inc`,
   Wi-Fi join the reader sent it, and Instapaper showed the bookmark archived
   with progress 1.0. An earlier `percent: "0"` event was sent and dropped
   without blocking the queue.
+- Duplicates, cleanup, highlights and covers, with a temporary bookmark
+  (deleted afterwards) and highlight uploads intercepted so as not to use
+  the free monthly five: after two reader downloads, syncing Archive found
+  both through their sidecars and downloaded nothing; Send highlights matched
+  a clipping file to its article and posted both passages once; syncing Home
+  added two articles and deleted the two archived ones. Deployed covers came
+  out as 528 x 800 baseline JPEGs, and the simulated reader built its Home
+  thumbnail from one.
 - In headless Chrome against the simulator's real Settings page, the card
   loaded (including the `import()` of `epub.js`) and showed its setup steps
   in both the not-connected and connected states.

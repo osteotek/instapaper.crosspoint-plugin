@@ -107,8 +107,9 @@
     return [file + '.meta.json', bytesToBase64(utf8Encoder.encode(JSON.stringify({ instapaper_id: String(bookmarkId) })))];
   }
 
-  // The same request the reader's device.json download makes. `url` stays
-  // last and unencoded: the Worker reads it raw to the end of the query.
+  // The request the reader's device.json download makes, plus the title,
+  // which the reader cannot send. `url` stays last and unencoded: the Worker
+  // reads it raw to the end of the query.
   function workerArticleUrl(cfg, bookmark) {
     return (
       cfg.worker_url +
@@ -116,6 +117,7 @@
       bookmark.id +
       '.epub?lang=' +
       encodeURIComponent(cfg.lang || 'en') +
+      (bookmark.title ? '&title=' + encodeURIComponent(bookmark.title) : '') +
       '&url=' +
       (bookmark.url || '')
     );
@@ -194,6 +196,11 @@
 
   // --- Sync ----------------------------------------------------------------------------
 
+  // The delete option; earlier versions of the card saved it as remove_gone.
+  function removeArchived(cfg) {
+    return cfg.remove_archived === undefined ? !!cfg.remove_gone : !!cfg.remove_archived;
+  }
+
   function clampLimit(value) {
     const n = Math.floor(Number(value));
     return Number.isFinite(n) && n >= 1 ? Math.min(n, MAX_LIMIT) : DEFAULT_LIMIT;
@@ -246,30 +253,87 @@
     }
   }
 
+  // --- State -----------------------------------------------------------------
+  // state.json in the plugin folder: `articles` (bookmark ID -> {file}) for
+  // the Instapaper EPUBs on the card, `since` for the archive check, and
+  // `highlights` (keys of highlights already sent). Sync and highlights both
+  // update it, each keeping the other's fields.
+  async function loadState(api, io) {
+    return (await io.readJson(api.dir + '/state.json')) || {};
+  }
+
+  function saveState(api, state) {
+    return api.writeFile(api.dir + '/state.json', bytesToBase64(utf8Encoder.encode(JSON.stringify(state))));
+  }
+
+  function bookmarkIdOf(meta) {
+    const id = meta && String(meta.instapaper_id === undefined ? '' : meta.instapaper_id);
+    return /^\d+$/.test(id || '') ? id : null;
+  }
+
+  // Instapaper EPUBs on the card, whoever wrote them (this page or the
+  // reader's catalog): every EPUB in DEST_DIR with an instapaper_id sidecar.
+  // `known` is the last list; only new sidecars are read. Returns the
+  // articles by ID and the lower-case names of all files in DEST_DIR.
+  async function articlesOnCard(io, known) {
+    const names = await io.listDir(DEST_DIR);
+    const present = new Set(names.map((n) => n.toLowerCase()));
+    const articles = {};
+    for (const id of Object.keys(known)) {
+      const file = known[id].file;
+      if (present.has(file.slice(DEST_DIR.length + 1).toLowerCase())) articles[id] = { file };
+    }
+    const listed = new Set(Object.values(articles).map((a) => a.file.toLowerCase()));
+    for (const name of names) {
+      if (!/\.epub\.meta\.json$/i.test(name)) continue;
+      const file = DEST_DIR + '/' + name.slice(0, -'.meta.json'.length);
+      if (listed.has(file.toLowerCase()) || !present.has(file.slice(DEST_DIR.length + 1).toLowerCase())) continue;
+      const id = bookmarkIdOf(await io.readJson(file + '.meta.json'));
+      if (id && !articles[id]) articles[id] = { file };
+    }
+    return { articles, names: present };
+  }
+
+  // IDs among `ids` that Instapaper archived or deleted since `since`, from
+  // its change feed (GET /bookmarks?since=, which pages by offset).
+  async function archivedSince(api, cfg, io, since, ids, tmpPath) {
+    const PAGE = 500;
+    const gone = new Set();
+    for (let offset = 0, page = 0; page < 20; page++) {
+      const changes = await fetchJson(api, cfg, io, '/bookmarks?since=' + since + '&limit=' + PAGE + '&offset=' + offset, tmpPath);
+      const bookmarks = changes.bookmarks || [];
+      const deleted = changes.deleted_ids || [];
+      for (const b of bookmarks) if (b.archived && ids.has(String(b.id))) gone.add(String(b.id));
+      for (const id of deleted) if (ids.has(String(id))) gone.add(String(id));
+      if (bookmarks.length + deleted.length < PAGE) break;
+      offset += bookmarks.length + deleted.length;
+    }
+    return gone;
+  }
+
   // `report(text, done, total)` follows the sync: `done` of `total` articles
   // handled so far; total is 0 while the list is loading.
   // `io` supplies the browser parts, so tests can run this in Node:
   //   epub (the epub.js module), readJson(path) -> object or null,
+  //   readBytes(path) -> Uint8Array or null, listDir(path) -> file names,
   //   deleteFile(path), parseHtml(html) -> Document, language, now() -> ms.
-  // `state.articles` maps bookmark ID to {file, section} for every EPUB this
-  // plugin wrote. It is saved after each change, so an interrupted sync keeps
-  // what it finished.
+  // The state is saved after each article, so an interrupted sync keeps what
+  // it finished.
   async function syncArticles(cfg, api, io, report) {
-    const { fileBaseName, normalizeSpace } = io.epub;
+    const { readerFileName, normalizeSpace } = io.epub;
     const section = cfg.section || 'home';
-    const statePath = api.dir + '/state.json';
     const tmpPath = api.dir + '/download.json';
-    const state = (await io.readJson(statePath)) || {};
-    const articles = state.articles || {};
-    const saveState = () => api.writeFile(statePath, bytesToBase64(utf8Encoder.encode(JSON.stringify({ articles }))));
+    const state = await loadState(api, io);
     const result = { added: [], skipped: [], removed: 0 };
 
     try {
       report('Listing articles...', 0, 0);
+      const onCard = await articlesOnCard(io, state.articles || {});
+      const articles = onCard.articles;
+      state.articles = articles;
       const listing = await fetchJson(api, cfg, io, '/bookmarks?' + sectionQuery(section) + '&limit=' + clampLimit(cfg.limit), tmpPath);
       const bookmarks = listing.bookmarks || [];
       const fresh = bookmarks.filter((b) => !articles[b.id]);
-      const usedNames = new Set(Object.values(articles).map((a) => a.file.toLowerCase()));
 
       const counts = () =>
         result.added.length || result.skipped.length
@@ -285,10 +349,11 @@
           continue;
         }
         report('Downloading ' + (i + 1) + ' of ' + fresh.length + counts() + ': ' + title, i, fresh.length);
-        let file = DEST_DIR + '/' + fileBaseName(bookmark.title, bookmark.id) + '.epub';
-        if (usedNames.has(file.toLowerCase())) {
-          file = DEST_DIR + '/' + fileBaseName(bookmark.title, bookmark.id) + ' (' + bookmark.id + ').epub';
-        }
+        // The reader's own name for it; another file by that name (another
+        // article, or one of yours) is never replaced.
+        let name = readerFileName(bookmark.title);
+        if (onCard.names.has(name.toLowerCase())) name = readerFileName(bookmark.title, ' (' + bookmark.id + ')');
+        const file = DEST_DIR + '/' + name;
         let skipReason;
         try {
           skipReason = cfg.worker_url
@@ -305,31 +370,171 @@
           continue;
         }
         await api.writeFile(...sidecarFor(file, bookmark.id));
-        usedNames.add(file.toLowerCase());
-        articles[bookmark.id] = { file, section };
-        await saveState();
+        onCard.names.add(name.toLowerCase());
+        articles[bookmark.id] = { file };
+        await saveState(api, state);
         result.added.push(title);
         report('Saved ' + (i + 1) + ' of ' + fresh.length + counts() + ': ' + title, i + 1, fresh.length);
       }
 
-      // Articles fetched from this section that are no longer among its
-      // newest `limit`: archived, moved or deleted in Instapaper.
-      if (cfg.remove_gone) {
-        report('Removing articles that left the folder...', fresh.length || 1, fresh.length || 1);
+      // Articles archived or deleted in Instapaper, including those archived
+      // from the reader. The first check looks back 30 days. Articles in the
+      // folder being synced stay (when syncing Archive, they are archived).
+      if (cfg.remove_archived) {
+        report('Checking for archived articles...', fresh.length || 1, fresh.length || 1);
+        const now = Math.floor(io.now() / 1000);
+        const since = state.since || now - 30 * 24 * 3600;
         const listed = new Set(bookmarks.map((b) => String(b.id)));
-        for (const id of Object.keys(articles)) {
-          if (articles[id].section !== section || listed.has(id)) continue;
+        const candidates = new Set(Object.keys(articles).filter((id) => !listed.has(id)));
+        const gone = await archivedSince(api, cfg, io, since, candidates, tmpPath);
+        for (const id of gone) {
           await io.deleteFile(articles[id].file);
           await io.deleteFile(articles[id].file + '.meta.json').catch(() => {});
           delete articles[id];
           result.removed++;
         }
-        if (result.removed) await saveState();
+        // A few minutes of overlap: the next check repeats rather than misses.
+        state.since = now - 300;
       }
+      await saveState(api, state);
     } finally {
       await io.deleteFile(tmpPath).catch(() => {});
     }
     return result;
+  }
+
+  // --- Highlights ----------------------------------------------------------------
+
+  const CLIPPINGS_DIR = '/.crosspoint/clippings';
+  const utf8Decoder = new TextDecoder();
+
+  // Reads the reader's clipping store (src/ClippingStore.cpp, versions 1 to 4).
+  // Values are little-endian; strings in the header have a 32-bit length.
+  function parseClippingStore(bytes) {
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    let pos = 0;
+    const need = (count) => {
+      if (pos + count > bytes.length) throw new Error('clipping file is truncated');
+    };
+    const u8 = () => {
+      need(1);
+      return view.getUint8(pos++);
+    };
+    const u16 = () => {
+      need(2);
+      pos += 2;
+      return view.getUint16(pos - 2, true);
+    };
+    const u32 = () => {
+      need(4);
+      pos += 4;
+      return view.getUint32(pos - 4, true);
+    };
+    const skip = (count) => {
+      need(count);
+      pos += count;
+    };
+    const text = (count) => {
+      need(count);
+      pos += count;
+      return utf8Decoder.decode(bytes.subarray(pos - count, pos));
+    };
+
+    const version = u8();
+    if (version < 1 || version > 4) throw new Error('unsupported clipping file version ' + version);
+    const count = u16();
+    const title = text(u32());
+    text(u32()); // author
+    const path = text(u32());
+    const clippings = [];
+    for (let i = 0; i < count; i++) {
+      skip(2 + 14 + 4); // spine index; pages, word indices, word count, paragraph; timestamp
+      if (version >= 3) skip(4); // layout signature
+      if (version >= 4) skip(4 + 4 + 8 + 1 + 65); // offsets, sync revision, pending flag, id
+      skip(48); // chapter title
+      clippings.push(text(version === 1 ? u32() : u16()));
+    }
+    return { title, path, clippings };
+  }
+
+  // A short, stable key for a highlight already sent (FNV-1a of the text).
+  function highlightKey(bookmarkId, text) {
+    let h = 0x811c9dc5;
+    for (const byte of utf8Encoder.encode(text)) h = Math.imul(h ^ byte, 0x01000193) >>> 0;
+    return bookmarkId + ':' + h.toString(16);
+  }
+
+  // Sends highlights made on the reader in Instapaper articles (books with an
+  // instapaper_id sidecar) to Instapaper. Instapaper answers 400 for a
+  // highlight it already has, so a lost state only costs a few requests.
+  // Without Premium it allows five a month and answers 403 after that.
+  async function sendHighlights(cfg, api, io, report) {
+    const state = await loadState(api, io);
+    const sent = new Set(state.highlights || []);
+    const result = { sent: 0, already: 0, books: 0, failed: [], limited: false };
+    report('Reading highlights...', 0, 0);
+
+    const pending = [];
+    for (const name of await io.listDir(CLIPPINGS_DIR)) {
+      if (!/^epub_\d+\.bin$/.test(name)) continue;
+      const bytes = await io.readBytes(CLIPPINGS_DIR + '/' + name);
+      let store;
+      try {
+        store = bytes && parseClippingStore(bytes);
+      } catch (e) {
+        continue;
+      }
+      if (!store) continue;
+      const id = bookmarkIdOf(await io.readJson(store.path + '.meta.json'));
+      if (!id) continue;
+      result.books++;
+      for (const raw of store.clippings) {
+        const text = raw.trim();
+        if (!text) continue;
+        if (sent.has(highlightKey(id, text))) result.already++;
+        else pending.push({ id, title: store.title, text });
+      }
+    }
+
+    try {
+      for (let i = 0; i < pending.length; i++) {
+        const h = pending[i];
+        report('Sending ' + (i + 1) + ' of ' + pending.length + ': ' + h.title, i, pending.length);
+        const r = await api.relay(
+          'POST',
+          API_BASE + '/bookmarks/' + h.id + '/highlights',
+          Object.assign({ 'Content-Type': 'application/json' }, authHeaders(cfg)),
+          JSON.stringify({ text: h.text }),
+        );
+        if (r.status === 200 || r.status === 201) result.sent++;
+        else if (r.status === 400) result.already++;
+        else if (r.status === 403) {
+          result.limited = true;
+          break;
+        } else if (r.status === 401 || r.status === 429) throw apiError(r.status, r.body);
+        else {
+          result.failed.push({ title: h.title, reason: 'Instapaper answered HTTP ' + r.status });
+          continue;
+        }
+        sent.add(highlightKey(h.id, h.text));
+      }
+    } finally {
+      // Keep the latest articles and since: a sync may have saved meanwhile.
+      const latest = await loadState(api, io);
+      latest.highlights = Array.from(sent);
+      await saveState(api, latest);
+    }
+    report('Done.', 1, 1);
+    return result;
+  }
+
+  function highlightSummary(result) {
+    const parts = [result.sent ? 'Sent ' + result.sent + ' highlights.' : 'No new highlights.'];
+    if (result.already) parts.push(result.already + ' were already in Instapaper.');
+    if (result.limited) parts.push('Instapaper allows five highlights a month without Premium; the rest wait for next month.');
+    if (!result.books) parts.push('No highlights found in Instapaper articles on the reader.');
+    if (result.failed.length) parts.push('Not sent:');
+    return parts.join(' ');
   }
 
   // The headline of a sync result; the card lists skipped articles below it.
@@ -352,6 +557,9 @@
       listSections,
       syncArticles,
       summary,
+      sendHighlights,
+      highlightSummary,
+      parseClippingStore,
     });
   }
 
@@ -423,10 +631,11 @@
       '<span class="setting-control"><input type="number" id="ip-limit" min="1" max="' +
       MAX_LIMIT +
       '"></span></div>' +
-      '<div class="setting-row"><span class="setting-name">Delete articles that left the folder</span>' +
+      '<div class="setting-row"><span class="setting-name">Delete articles archived or deleted in Instapaper</span>' +
       '<span class="setting-control"><input type="checkbox" id="ip-remove"></span></div>' +
       '<div class="setting-row">' +
       '<button type="button" class="btn-small btn-add" id="ip-sync-btn">Sync now</button> ' +
+      '<button type="button" class="btn-small" id="ip-highlights-btn">Send highlights</button> ' +
       '<button type="button" class="btn-small" id="ip-signout">Disconnect</button>' +
       '</div>' +
       '<progress id="ip-progress" style="width:100%;display:none"></progress>' +
@@ -510,9 +719,30 @@
       if (!r.ok && r.status !== 404) throw new Error('could not delete ' + path + ' (HTTP ' + r.status + ')');
     }
 
+    // File names in an SD folder; none when it does not exist.
+    async function listDir(path) {
+      try {
+        const r = await fetch('/api/files?path=' + encodeURIComponent(path));
+        return r.ok ? (await r.json()).filter((f) => !f.isDirectory).map((f) => f.name) : [];
+      } catch (e) {
+        return [];
+      }
+    }
+
+    async function readBytes(path) {
+      try {
+        const r = await fetch('/download?path=' + encodeURIComponent(path));
+        return r.ok ? new Uint8Array(await r.arrayBuffer()) : null;
+      } catch (e) {
+        return null;
+      }
+    }
+
     const io = {
       epub: await import(api.pluginFile('epub.js')),
       readJson,
+      readBytes,
+      listDir,
       deleteFile,
       parseHtml: (html) => new DOMParser().parseFromString(html, 'text/html'),
       language: (navigator.language || '').split('-')[0].toLowerCase(),
@@ -571,7 +801,7 @@
       el('ip-signin').style.display = 'none';
       el('ip-sync').style.display = '';
       el('ip-limit').value = clampLimit(cfg.limit);
-      el('ip-remove').checked = !!cfg.remove_gone;
+      el('ip-remove').checked = !!removeArchived(cfg);
       showConverter(cfg);
       showSections(SECTIONS, cfg.section);
       status('Connected as ' + cfg.username + '.');
@@ -612,7 +842,7 @@
             user_id: user.id,
             section: 'home',
             limit: DEFAULT_LIMIT,
-            remove_gone: false,
+            remove_archived: false,
             lang: io.language || 'en',
           },
           converterSettings(saved),
@@ -638,33 +868,46 @@
       }
     };
 
-    el('ip-sync-btn').onclick = async () => {
-      const button = el('ip-sync-btn');
+    // Sync and Send highlights both update state.json, so one runs at a time.
+    async function runTask(buttonId, busyLabel, task) {
+      const button = el(buttonId);
+      const label = button.textContent;
       if (!saved.token) {
         showSyncResult('Connect first.');
         return;
       }
-      button.disabled = true;
-      el('ip-signout').disabled = true;
-      button.textContent = 'Syncing...';
+      const buttons = ['ip-sync-btn', 'ip-highlights-btn', 'ip-signout'].map(el);
+      buttons.forEach((b) => (b.disabled = true));
+      button.textContent = busyLabel;
       try {
+        await task();
+      } catch (e) {
+        showSyncResult('Error: ' + e.message + '.');
+      } finally {
+        buttons.forEach((b) => (b.disabled = false));
+        button.textContent = label;
+      }
+    }
+
+    el('ip-sync-btn').onclick = () =>
+      runTask('ip-sync-btn', 'Syncing...', async () => {
         const cfg = Object.assign({}, saved, {
           section: el('ip-section').value || 'home',
           limit: clampLimit(el('ip-limit').value),
-          remove_gone: el('ip-remove').checked,
+          remove_archived: el('ip-remove').checked,
         });
+        delete cfg.remove_gone;
         await writeConfig(cfg);
         saved = cfg;
         const result = await syncArticles(cfg, api, io, showSyncProgress);
         showSyncResult(summary(result), result.skipped);
-      } catch (e) {
-        showSyncResult('Error: ' + e.message + '.');
-      } finally {
-        button.disabled = false;
-        el('ip-signout').disabled = false;
-        button.textContent = 'Sync now';
-      }
-    };
+      });
+
+    el('ip-highlights-btn').onclick = () =>
+      runTask('ip-highlights-btn', 'Sending...', async () => {
+        const result = await sendHighlights(saved, api, io, showSyncProgress);
+        showSyncResult(highlightSummary(result), result.failed);
+      });
 
     el('ip-worker-btn').onclick = async () => {
       const use = el('ip-use-worker').checked;
@@ -718,8 +961,15 @@
     api.registerAction('sync', async () => {
       const cfg = (await readJson(CONFIG_PATH)) || {};
       if (!cfg.token) throw new Error('not connected');
-      const result = await syncArticles(cfg, api, io, () => {});
+      const result = await syncArticles(Object.assign({}, cfg, { remove_archived: removeArchived(cfg) }), api, io, () => {});
       return { added: result.added.length, skipped: result.skipped.length, removed: result.removed };
+    });
+
+    api.registerAction('highlights', async () => {
+      const cfg = (await readJson(CONFIG_PATH)) || {};
+      if (!cfg.token) throw new Error('not connected');
+      const result = await sendHighlights(cfg, api, io, () => {});
+      return { sent: result.sent, already: result.already, limited: result.limited };
     });
   });
 })();

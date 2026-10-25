@@ -1,6 +1,6 @@
 // Converter Worker for Articles for Instapaper.
 //
-// GET /bookmarks/{id}.epub?lang=<fallback>&url=<article URL>
+// GET /bookmarks/{id}.epub?lang=<fallback>&title=<title>&url=<article URL>
 // GET /lists?token=<token> (the reader's list picker; see lists.js)
 // POST /events/exit (reading progress and archiving; see events.js)
 // with the caller's own "Authorization: Bearer <Instapaper token>".
@@ -14,17 +14,20 @@
 //
 // `url` comes last and is taken raw: the reader substitutes the article URL
 // into the template without encoding it, so it may contain & and =.
+// `title` is optional and encoded. The web sync sends the title Instapaper
+// lists; the reader cannot (it would put the title in the URL unencoded,
+// spaces and all), so its downloads use the page's own title.
 import { DOMParser } from 'linkedom';
 import {
   articleContent,
   articleDocumentHtml,
   articleFromParse,
   buildEpub,
-  fileBaseName,
   placeImages,
+  readerFileName,
 } from '../instapaper/epub.js';
 import { readerExit } from './events.js';
-import { fetchImages } from './images.js';
+import { fetchCover, fetchImages } from './images.js';
 import { folderLists } from './lists.js';
 
 const INSTAPAPER_API = 'https://www.instapaper.com/api/2';
@@ -42,8 +45,10 @@ function textResponse(status, message) {
 function readQuery(search) {
   const match = /[?&]url=/.exec(search);
   const head = match ? search.slice(0, match.index) : search;
+  const params = new URLSearchParams(head);
   return {
-    lang: new URLSearchParams(head).get('lang') || '',
+    lang: params.get('lang') || '',
+    title: params.get('title') || '',
     url: match ? search.slice(match.index + match[0].length) : '',
   };
 }
@@ -88,22 +93,34 @@ export async function convert(request) {
   if (!(parsed.content && parsed.content.body)) return textResponse(422, 'Instapaper has no text for this article.');
 
   const query = readQuery(url.search);
-  const article = articleFromParse({ id, url: query.url }, parsed);
+  const article = articleFromParse({ id, url: query.url, title: query.title }, parsed);
   const doc = new DOMParser().parseFromString(articleDocumentHtml(parsed.content.body), 'text/html');
   const text = articleContent(doc, article.title, query.lang.toLowerCase().split('-')[0], {
     images: true,
     baseUrl: query.url,
   });
   const { files, stats } = await fetchImages(text.images, query.url);
-  const epub = await buildEpub(article, placeImages(text, files), Date.now());
-  const filename = fileBaseName(article.title, id).replace(/[^\x20-\x7E]/g, '_') + '.epub';
+  // The cover: Instapaper's lead image, else the first image the article keeps.
+  const thumbnail = (parsed.metadata && parsed.metadata.thumbnail) || '';
+  const firstKept = files.findIndex(Boolean);
+  const coverUrl = /^https?:/.test(thumbnail) ? thumbnail : firstKept >= 0 ? text.images[firstKept].url : '';
+  const cover = coverUrl ? await fetchCover(coverUrl, query.url) : null;
+  const epub = await buildEpub(article, placeImages(text, files, cover), Date.now());
+  const filename = readerFileName(article.title).replace(/[^\x20-\x7E]/g, '_');
   return new Response(epub, {
     headers: {
       'Content-Type': 'application/epub+zip',
       'Content-Disposition': 'attachment; filename="' + filename.replace(/"/g, '') + '"',
       'Cache-Control': 'private, no-store',
       // For checking a deployment: images found, kept, and converted by Cloudflare.
-      'X-Images': stats.found + ' found, ' + stats.kept + ' kept, ' + stats.converted + ' converted',
+      'X-Images':
+        stats.found +
+        ' found, ' +
+        stats.kept +
+        ' kept, ' +
+        stats.converted +
+        ' converted, ' +
+        (cover ? 'cover ' + cover.width + 'x' + cover.height + (cover.resized ? ' converted' : ' original') : 'no cover'),
     },
   });
 }

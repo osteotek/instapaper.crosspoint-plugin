@@ -6,7 +6,7 @@ import { inflateRawSync, crc32 } from 'node:zlib';
 import { JSDOM } from 'jsdom';
 import * as epub from '../instapaper/epub.js';
 import worker from '../worker/index.js';
-import { fetchImages, imageInfo, readerCanShow } from '../worker/images.js';
+import { COVER_TRANSFORM, fetchCover, fetchImages, imageInfo, readerCanShow } from '../worker/images.js';
 import { readerExit } from '../worker/events.js';
 import { folderLists } from '../worker/lists.js';
 
@@ -159,12 +159,28 @@ test('buildEpub marks right-to-left articles', async () => {
   assert.match(files[5].text, /<html [^>]*dir="rtl"/);
 });
 
-test('fileBaseName makes FAT-safe names', async () => {
-  const { fileBaseName } = epub;
-  assert.equal(fileBaseName('a/b: c?  d.', 7), 'a b c d');
-  assert.equal(fileBaseName('   ', 7), 'Article 7');
-  assert.equal(fileBaseName('x'.repeat(100), 7).length, 60);
-  assert.equal(Array.from(fileBaseName('😀'.repeat(70), 7)).length, 60);
+test('withoutSiteSuffix drops a trailing site name only', () => {
+  const { withoutSiteSuffix } = epub;
+  assert.equal(withoutSiteSuffix('Long interview title — Meduza', 'https://meduza.io/feature/x'), 'Long interview title');
+  assert.equal(withoutSiteSuffix('My Students Can’t Read | The Atlantic', 'https://www.theatlantic.com/a'), 'My Students Can’t Read');
+  assert.equal(withoutSiteSuffix('Agents - The New Stack', 'https://thenewstack.io/x'), 'Agents');
+  assert.equal(withoutSiteSuffix('Rust - A Language Guide', 'https://example.com/x'), 'Rust - A Language Guide', 'not the site');
+  assert.equal(withoutSiteSuffix('Plain title', ''), 'Plain title');
+});
+
+test('readerFileName names files like the reader catalog does', () => {
+  const { readerFileName } = epub;
+  // Expected values follow StringUtils::sanitizeFilenamePreservingExtension.
+  assert.equal(readerFileName('First: story'), 'First_ story.epub');
+  assert.equal(readerFileName('  ..Hidden?'), 'Hidden_.epub');
+  assert.equal(readerFileName('Ends with dots...'), 'Ends with dots.epub');
+  assert.equal(readerFileName('Tab\there'), 'Tabhere.epub', 'control characters are dropped');
+  assert.equal(readerFileName(''), 'book.epub');
+  const long = readerFileName('x'.repeat(200));
+  assert.equal(long, 'x'.repeat(95) + '.epub');
+  // Cut at a whole character: 47 two-byte letters fit 95 bytes, a 48th does not.
+  assert.equal(readerFileName('ж'.repeat(60)), 'ж'.repeat(47) + '.epub');
+  assert.equal(readerFileName('x'.repeat(200), ' (42)'), 'x'.repeat(90) + ' (42).epub');
 });
 
 test('clampLimit falls back to 10 and caps at 50', async () => {
@@ -175,29 +191,35 @@ test('clampLimit falls back to 10 and caps at 50', async () => {
   assert.equal(clampLimit(500), 50);
 });
 
-// Fake Instapaper v2 and device: /api/fetch writes responses into an SD card
+// Fake Instapaper v2 and device. /api/fetch writes responses into an SD card
 // in a Map and fails on non-2xx like the firmware; the relay returns them.
-// `worker` maps bookmark IDs to the converter's answer: [status, body].
-function fakeDevice({ bookmarks = [], parses = {}, folders = [], worker = {} } = {}) {
+// `worker` maps bookmark IDs to the converter's answer: [status, body];
+// `changes` is the answer to /bookmarks?since=; `highlight` answers highlight
+// POSTs (status, by default 200).
+function fakeDevice({ bookmarks = [], parses = {}, folders = [], worker = {}, changes = null, highlight = () => 200 } = {}) {
   const sd = new Map();
   const calls = [];
   const deleted = [];
-  const respond = (url, headers) => {
+  const respond = (method, url, headers, body) => {
     assert.equal(headers.Authorization, 'Bearer tok');
     if (url.startsWith('https://w.example/')) {
       calls.push(url.slice('https://w.example'.length));
       const id = /^https:\/\/w\.example\/bookmarks\/(\d+)\.epub\?/.exec(url)[1];
-      const [status, body] = worker[id] || [404, 'Not found.'];
-      return { status, headers: [], body };
+      const [status, text] = worker[id] || [404, 'Not found.'];
+      return { status, headers: [], body: text };
     }
     const u = new URL(url);
     assert.equal(u.origin, 'https://www.instapaper.com');
     assert.ok(u.pathname.startsWith('/api/2/'));
     const path = u.pathname.slice(6);
-    calls.push(path + u.search);
+    calls.push((method === 'POST' ? 'POST ' : '') + path + u.search);
     const json = (value, status = 200) => ({ status, headers: [], body: JSON.stringify(value) });
+    const h = path.match(/^\/bookmarks\/(\d+)\/highlights$/);
+    if (h && method === 'POST') return json({}, highlight(h[1], JSON.parse(body).text));
+    assert.equal(method, 'GET');
     if (path === '/me') return json({ id: 5, username: 'reader@example.com', premium: false });
     if (path === '/folders') return json({ folders });
+    if (path === '/bookmarks' && u.searchParams.has('since')) return json(changes || { bookmarks: [], deleted_ids: [] });
     if (path === '/bookmarks') {
       const limit = Number(u.searchParams.get('limit'));
       return json({ bookmarks: bookmarks.slice(0, limit), total: bookmarks.length });
@@ -211,11 +233,10 @@ function fakeDevice({ bookmarks = [], parses = {}, folders = [], worker = {} } =
   const api = {
     dir: '/plugins/instapaper',
     async relay(method, url, headers, body) {
-      assert.equal(method, 'GET');
-      return respond(url, headers);
+      return respond(method, url, headers, body);
     },
     async fetchToSd(url, dest, headers) {
-      const r = respond(url, headers);
+      const r = respond('GET', url, headers);
       if (r.status !== 200) throw Object.assign(new Error('/api/fetch made no progress'), { status: 500 });
       sd.set(dest, new TextEncoder().encode(r.body));
       return { status: 200, complete: true };
@@ -229,6 +250,14 @@ function fakeDevice({ bookmarks = [], parses = {}, folders = [], worker = {} } =
     async readJson(path) {
       return sd.has(path) ? JSON.parse(new TextDecoder().decode(sd.get(path))) : null;
     },
+    async readBytes(path) {
+      return sd.get(path) || null;
+    },
+    async listDir(dir) {
+      return Array.from(sd.keys())
+        .filter((k) => k.startsWith(dir + '/') && !k.slice(dir.length + 1).includes('/'))
+        .map((k) => k.slice(dir.length + 1));
+    },
     async deleteFile(path) {
       deleted.push(path);
       sd.delete(path);
@@ -238,7 +267,13 @@ function fakeDevice({ bookmarks = [], parses = {}, folders = [], worker = {} } =
     language: 'en',
     now: () => Date.UTC(2026, 9, 25),
   };
-  return { api, io, sd, calls, deleted };
+  // Puts a file on the card the way the reader's catalog would: the EPUB and
+  // its sidecar.
+  const fetchedOnReader = (name, id) => {
+    sd.set('/Instapaper/' + name, new TextEncoder().encode('EPUB'));
+    sd.set('/Instapaper/' + name + '.meta.json', new TextEncoder().encode(JSON.stringify({ instapaper_id: String(id) })));
+  };
+  return { api, io, sd, calls, deleted, fetchedOnReader };
 }
 
 const bookmark = (id, title, extra) =>
@@ -260,7 +295,7 @@ test('account and listSections use the bearer token', async () => {
   await assert.rejects(account(bad.api, connected), /did not accept the access token/);
 });
 
-test('syncArticles downloads new articles, skips what has no text and removes gone ones', async () => {
+test('syncArticles downloads new articles and skips what has no text', async () => {
   const { syncArticles, summary } = await loadPlugin();
   const device = fakeDevice({
     bookmarks: [
@@ -272,7 +307,7 @@ test('syncArticles downloads new articles, skips what has no text and removes go
     ],
     parses: { 1: parsed('<p>One</p>', { metadata: { author: { name: 'Ann' } } }), 4: parsed('<p>Four</p>'), 5: parsed(null) },
   });
-  const cfg = Object.assign({ section: 'folder:9', limit: 20, remove_gone: true }, connected);
+  const cfg = Object.assign({ section: 'folder:9', limit: 20 }, connected);
   const result = await syncArticles(cfg, device.api, device.io, () => {});
 
   assert.deepEqual(Array.from(result.added), ['First: story', 'First/ story']);
@@ -282,38 +317,15 @@ test('syncArticles downloads new articles, skips what has no text and removes go
   );
   assert.equal(device.calls[0], '/bookmarks?folder_id=9&limit=20');
   assert.ok(!device.calls.includes('/bookmarks/2/parse'), 'a PDF is not fetched');
-  const first = readZip(device.sd.get('/Instapaper/First story.epub'));
-  assert.deepEqual(await device.io.readJson('/Instapaper/First story.epub.meta.json'), { instapaper_id: '1' });
+  // Named like the reader's catalog names them; a clash gets the ID.
+  const first = readZip(device.sd.get('/Instapaper/First_ story.epub'));
   assert.match(first[2].text, /<dc:creator>Ann<\/dc:creator>/);
-  assert.ok(device.sd.has('/Instapaper/First story (4).epub'));
+  assert.deepEqual(await device.io.readJson('/Instapaper/First_ story.epub.meta.json'), { instapaper_id: '1' });
+  assert.ok(device.sd.has('/Instapaper/First_ story (4).epub'));
   assert.ok(device.deleted.includes('/plugins/instapaper/download.json'));
   assert.ok(!device.sd.has('/plugins/instapaper/download.json'));
   assert.equal(summary(result), 'Added 2 articles. Skipped 3:');
-
-  // Second run: 1 left the folder. 4 came from another section, so it stays.
-  const state = await device.io.readJson('/plugins/instapaper/state.json');
-  state.articles[4].section = 'home';
-  await device.api.writeFile('/plugins/instapaper/state.json', btoa(JSON.stringify(state)));
-  device.calls.length = 0;
-  device.deleted.length = 0;
-  const second = fakeDevice({ bookmarks: [bookmark(6, 'New')], parses: { 6: parsed('<p>Six</p>') } });
-  Object.assign(second.api, { writeFile: device.api.writeFile });
-  Object.assign(second.io, { readJson: device.io.readJson, deleteFile: device.io.deleteFile });
-  second.api.fetchToSd = async (url, dest, headers) => {
-    const r = await second.api.relay('GET', url, headers);
-    device.sd.set(dest, new TextEncoder().encode(r.body));
-    return { complete: true };
-  };
-  const again = await syncArticles(cfg, second.api, second.io, () => {});
-  assert.deepEqual(Array.from(again.added), ['New']);
-  assert.equal(again.removed, 1);
-  assert.deepEqual(Array.from(device.deleted), [
-    '/Instapaper/First story.epub',
-    '/Instapaper/First story.epub.meta.json',
-    '/plugins/instapaper/download.json',
-  ]);
-  const after = await device.io.readJson('/plugins/instapaper/state.json');
-  assert.deepEqual(Array.from(Object.keys(after.articles)).sort(), ['4', '6']);
+  assert.deepEqual(Object.keys((await device.io.readJson('/plugins/instapaper/state.json')).articles).sort(), ['1', '4']);
 });
 
 test('syncArticles reports progress article by article', async () => {
@@ -344,26 +356,79 @@ test('syncArticles reports progress article by article', async () => {
   assert.deepEqual(none, [['Listing articles...', 0, 0], ['No new articles.', 1, 1]]);
 });
 
-test('syncArticles skips articles already on the card and keeps files when removal is off', async () => {
+test('syncArticles does not download again what the reader already fetched', async () => {
   const { syncArticles } = await loadPlugin();
-  const device = fakeDevice({ bookmarks: [bookmark(1, 'A')], parses: { 1: parsed('<p>A</p>') } });
-  const cfg = Object.assign({ section: 'home', limit: 5, remove_gone: false }, connected);
-  await syncArticles(cfg, device.api, device.io, () => {});
+  const device = fakeDevice({
+    bookmarks: [bookmark(1, 'Fetched on the reader'), bookmark(2, 'Mine'), bookmark(3, 'New')],
+    parses: { 2: parsed('<p>2</p>'), 3: parsed('<p>3</p>') },
+  });
+  device.fetchedOnReader('Fetched on the reader.epub', 1);
+  device.sd.set('/Instapaper/Mine.epub', new TextEncoder().encode('a file of yours, no sidecar'));
+  const cfg = Object.assign({ section: 'home', limit: 5 }, connected);
+  const result = await syncArticles(cfg, device.api, device.io, () => {});
+  assert.deepEqual(Array.from(result.added), ['Mine', 'New']);
+  assert.ok(!device.calls.includes('/bookmarks/1/parse'), 'found by its sidecar');
+  assert.equal(new TextDecoder().decode(device.sd.get('/Instapaper/Mine.epub')), 'a file of yours, no sidecar', 'never replaced');
+  assert.ok(device.sd.has('/Instapaper/Mine (2).epub'));
+  const state = await device.io.readJson('/plugins/instapaper/state.json');
+  assert.deepEqual(state.articles['1'], { file: '/Instapaper/Fetched on the reader.epub' });
+
+  // A file you deleted is forgotten, so it can be downloaded again.
+  device.sd.delete('/Instapaper/New.epub');
   device.calls.length = 0;
   const again = await syncArticles(cfg, device.api, device.io, () => {});
-  assert.equal(again.added.length, 0);
-  assert.deepEqual(Array.from(device.calls), ['/bookmarks?section=home&limit=5']);
+  assert.deepEqual(Array.from(again.added), ['New']);
+});
 
-  const gone = fakeDevice({ bookmarks: [] });
-  Object.assign(gone.api, { writeFile: device.api.writeFile });
-  Object.assign(gone.io, { readJson: device.io.readJson });
-  gone.api.fetchToSd = async (url, dest) => {
-    device.sd.set(dest, new TextEncoder().encode('{"bookmarks":[],"total":0}'));
-    return { complete: true };
-  };
-  const result = await syncArticles(cfg, gone.api, gone.io, () => {});
-  assert.equal(result.removed, 0);
-  assert.ok(device.sd.has('/Instapaper/A.epub'));
+test('syncArticles deletes articles archived or deleted in Instapaper', async () => {
+  const { syncArticles } = await loadPlugin();
+  const device = fakeDevice({
+    bookmarks: [],
+    changes: {
+      bookmarks: [
+        Object.assign(bookmark(1, 'Archived'), { archived: true }),
+        Object.assign(bookmark(2, 'Progress changed'), { archived: false }),
+        Object.assign(bookmark(9, 'Not on the card'), { archived: true }),
+      ],
+      deleted_ids: [3],
+    },
+  });
+  device.fetchedOnReader('Archived.epub', 1);
+  device.fetchedOnReader('Progress changed.epub', 2);
+  device.fetchedOnReader('Deleted.epub', 3);
+  const cfg = Object.assign({ section: 'home', limit: 5, remove_archived: true }, connected);
+  const result = await syncArticles(cfg, device.api, device.io, () => {});
+  assert.equal(result.removed, 2);
+  assert.deepEqual(Array.from(device.deleted).filter((p) => p.startsWith('/Instapaper')).sort(), [
+    '/Instapaper/Archived.epub',
+    '/Instapaper/Archived.epub.meta.json',
+    '/Instapaper/Deleted.epub',
+    '/Instapaper/Deleted.epub.meta.json',
+  ]);
+  assert.ok(device.sd.has('/Instapaper/Progress changed.epub'));
+  // The first check looks back 30 days; the next starts where it ended.
+  const now = Date.UTC(2026, 9, 25) / 1000;
+  assert.ok(device.calls.includes('/bookmarks?since=' + (now - 30 * 24 * 3600) + '&limit=500&offset=0'));
+  const state = await device.io.readJson('/plugins/instapaper/state.json');
+  assert.equal(state.since, now - 300);
+  device.calls.length = 0;
+  await syncArticles(cfg, device.api, device.io, () => {});
+  assert.ok(device.calls.includes('/bookmarks?since=' + (now - 300) + '&limit=500&offset=0'));
+
+  // Syncing Archive keeps the archived articles it lists.
+  const archive = fakeDevice({
+    bookmarks: [Object.assign(bookmark(1, 'Archived'), { archived: true })],
+    changes: { bookmarks: [Object.assign(bookmark(1, 'Archived'), { archived: true })], deleted_ids: [] },
+  });
+  archive.fetchedOnReader('Archived.epub', 1);
+  const kept = await syncArticles(Object.assign({}, cfg, { section: 'archive' }), archive.api, archive.io, () => {});
+  assert.equal(kept.removed, 0);
+  assert.ok(archive.sd.has('/Instapaper/Archived.epub'));
+
+  // With the option off nothing is checked or deleted.
+  device.calls.length = 0;
+  await syncArticles(Object.assign({}, cfg, { remove_archived: false }), device.api, device.io, () => {});
+  assert.ok(!device.calls.some((c) => c.includes('since=')));
 });
 
 test('syncArticles stops when the token is rejected', async () => {
@@ -390,7 +455,10 @@ test('syncArticles downloads EPUBs from the converter when it is on', async () =
   const result = await syncArticles(cfg, device.api, device.io, () => {});
   assert.deepEqual(Array.from(result.added), ['With pictures']);
   assert.equal(new TextDecoder().decode(device.sd.get('/Instapaper/With pictures.epub')), 'EPUB-BYTES');
-  assert.ok(device.calls.includes('/bookmarks/1.epub?lang=de&url=https://news.example.org/a?x=1&y=2'), 'url last and raw');
+  assert.ok(
+    device.calls.includes('/bookmarks/1.epub?lang=de&title=With%20pictures&url=https://news.example.org/a?x=1&y=2'),
+    'title encoded, url last and raw',
+  );
   assert.ok(!device.calls.some((c) => c.endsWith('/parse')), 'the page does not parse when the converter is on');
   assert.equal(summary(result), 'Added 1 articles. Skipped 3:');
   assert.deepEqual(
@@ -401,6 +469,101 @@ test('syncArticles downloads EPUBs from the converter when it is on', async () =
   const rejected = fakeDevice({ bookmarks: [bookmark(1, 'A'), bookmark(2, 'B')], worker: { 1: [401, 'Instapaper answered HTTP 401.'] } });
   await assert.rejects(syncArticles(cfg, rejected.api, rejected.io, () => {}), /did not accept the access token/);
   assert.ok(!rejected.calls.some((c) => c.startsWith('/bookmarks/2.epub')), 'a rejected token stops the sync');
+});
+
+// Writes a clipping store the way ClippingStore::writeToFile does (version 4).
+function clippingStore(path, texts) {
+  const enc = new TextEncoder();
+  const parts = [];
+  const u8 = (v) => parts.push(Uint8Array.of(v));
+  const u16 = (v) => parts.push(Uint8Array.of(v & 255, v >> 8));
+  const u32 = (v) => parts.push(Uint8Array.of(v & 255, (v >> 8) & 255, (v >> 16) & 255, v >>> 24));
+  const str32 = (s) => {
+    const b = enc.encode(s);
+    u32(b.length);
+    parts.push(b);
+  };
+  u8(4);
+  u16(texts.length);
+  str32('Book title');
+  str32('Author');
+  str32(path);
+  for (const text of texts) {
+    u16(0); // spine
+    parts.push(new Uint8Array(14)); // pages, word indices, word count, paragraph
+    u32(1761400000); // timestamp
+    u32(0); // layout signature
+    parts.push(new Uint8Array(4 + 4 + 8 + 1 + 65)); // offsets, revision, pending, id
+    parts.push(new Uint8Array(48)); // chapter title
+    const b = enc.encode(text);
+    u16(b.length);
+    parts.push(b);
+  }
+  const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+  let pos = 0;
+  for (const p of parts) {
+    out.set(p, pos);
+    pos += p.length;
+  }
+  return out;
+}
+
+test('sendHighlights posts highlights from Instapaper articles once', async () => {
+  const { sendHighlights, highlightSummary, parseClippingStore } = await loadPlugin();
+  const posted = [];
+  const device = fakeDevice({
+    highlight: (id, text) => {
+      posted.push(id + ': ' + text);
+      return text === 'Already there' ? 400 : 200;
+    },
+  });
+  device.fetchedOnReader('Article.epub', 42);
+  device.sd.set('/.crosspoint/clippings/epub_1.bin', clippingStore('/Instapaper/Article.epub', ['  First highlight ', 'Already there', '']));
+  device.sd.set('/.crosspoint/clippings/epub_2.bin', clippingStore('/Books/Not Instapaper.epub', ['Ignored']));
+  device.sd.set('/.crosspoint/clippings/notes.txt', new TextEncoder().encode('not a store'));
+  assert.deepEqual(Array.from(parseClippingStore(device.sd.get('/.crosspoint/clippings/epub_1.bin')).clippings), [
+    '  First highlight ',
+    'Already there',
+    '',
+  ]);
+
+  const progress = [];
+  const result = await sendHighlights(connected, device.api, device.io, (...a) => progress.push(a));
+  assert.deepEqual(posted, ['42: First highlight', '42: Already there']);
+  assert.deepEqual({ sent: result.sent, already: result.already, books: result.books }, { sent: 1, already: 1, books: 1 });
+  assert.equal(highlightSummary(result), 'Sent 1 highlights. 1 were already in Instapaper.');
+  assert.deepEqual(progress[0], ['Reading highlights...', 0, 0]);
+
+  // A second run sends nothing; sync keeps the record of sent highlights.
+  posted.length = 0;
+  const { syncArticles } = await loadPlugin();
+  await syncArticles(Object.assign({ section: 'home', limit: 5 }, connected), device.api, device.io, () => {});
+  const again = await sendHighlights(connected, device.api, device.io, () => {});
+  assert.deepEqual(posted, []);
+  assert.equal(again.already, 2);
+  assert.equal(highlightSummary(again), 'No new highlights. 2 were already in Instapaper.');
+});
+
+test('sendHighlights stops at the free monthly limit and on a rejected token', async () => {
+  const { sendHighlights, highlightSummary } = await loadPlugin();
+  let count = 0;
+  const device = fakeDevice({ highlight: () => (++count > 1 ? 403 : 200) });
+  device.fetchedOnReader('Article.epub', 42);
+  device.sd.set('/.crosspoint/clippings/epub_1.bin', clippingStore('/Instapaper/Article.epub', ['One', 'Two', 'Three']));
+  const result = await sendHighlights(connected, device.api, device.io, () => {});
+  assert.equal(count, 2, 'stops at the first 403');
+  assert.equal(result.sent, 1);
+  assert.equal(result.limited, true);
+  assert.match(highlightSummary(result), /five highlights a month without Premium/);
+  // Next month the rest go, the first is not sent again.
+  count = -10;
+  const later = await sendHighlights(connected, device.api, device.io, () => {});
+  assert.equal(later.sent, 2);
+
+  const rejected = fakeDevice({ highlight: () => 401 });
+  rejected.fetchedOnReader('Article.epub', 42);
+  rejected.sd.set('/.crosspoint/clippings/epub_1.bin', clippingStore('/Instapaper/Article.epub', ['One']));
+  await assert.rejects(sendHighlights(connected, rejected.api, rejected.io, () => {}), /did not accept the access token/);
 });
 
 test('converterSettings keeps the address when the converter is off', async () => {
@@ -447,7 +610,8 @@ function gifBytes(width, height, interlaced) {
 }
 
 // Runs the Worker's fetch handler with the network replaced: Instapaper URLs
-// get `answer`; image URLs get `images[url]` ([status, bytes, resized]).
+// get `answer`; image URLs get `images[url]` ([status, bytes, resized]), and
+// cover conversions `images['cover:' + url]`.
 async function callWorker(path, headers, answer, images = {}) {
   const realFetch = globalThis.fetch;
   const seen = [];
@@ -457,7 +621,8 @@ async function callWorker(path, headers, answer, images = {}) {
       const [status, body] = answer;
       return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
     }
-    const [status, bytes, resized] = images[url] || [404, new Uint8Array(0)];
+    const isCover = !!(init.cf && init.cf.image && init.cf.image.fit === 'cover');
+    const [status, bytes, resized] = (isCover ? images['cover:' + url] : images[url]) || [404, new Uint8Array(0)];
     return new Response(bytes, { status, headers: resized ? { 'cf-resized': 'internal=ok' } : {} });
   };
   try {
@@ -488,6 +653,14 @@ test('worker converts a bookmark to EPUB with the caller token', async () => {
   assert.match(opf, /<dc:creator>Ann<\/dc:creator>/);
   assert.match(opf, /<dc:language>de<\/dc:language>/);
   assert.match(opf, /<dc:source>https:\/\/news\.example\.org\/a\?x=1&amp;lang=fr<\/dc:source>/);
+
+  // The title the web sync sends wins over the page's own.
+  const titled = await callWorker(
+    '/bookmarks/42.epub?lang=de&title=Br%C3%BCcken%20%26%20Stra%C3%9Fen&url=https://news.example.org/a',
+    { Authorization: 'Bearer tok' },
+    [200, parsedBody],
+  );
+  assert.match(readZip(new Uint8Array(await titled.response.arrayBuffer()))[2].text, /<dc:title>Brücken &amp; Straßen<\/dc:title>/);
   assert.match(files[5].text, /<p><i>Ann · news\.example\.org<\/i><\/p><p>Die Brücke/);
   assert.doesNotMatch(files[5].text, /<img/);
 });
@@ -548,6 +721,18 @@ test('fetchImages converts through cf.image and falls back to readable originals
   assert.ok(!calls.includes('https://i/converted'), 'a converted image is fetched once');
 });
 
+test('fetchImages gives up on slow image hosts within its time budget', async () => {
+  // A host that never answers; the request ends only when it is aborted.
+  const hanging = (url, init) =>
+    new Promise((resolve, reject) => init.signal.addEventListener('abort', () => reject(new Error('aborted'))));
+  const list = Array.from({ length: 20 }, (_, i) => ({ url: 'https://slow/' + i, alt: '' }));
+  const started = Date.now();
+  const { files, stats } = await fetchImages(list, '', hanging, 300);
+  assert.ok(Date.now() - started < 2000, 'returned after ' + (Date.now() - started) + ' ms');
+  assert.equal(stats.kept, 0);
+  assert.equal(files.length, 20);
+});
+
 test('worker embeds converted images in the EPUB', async () => {
   const parsedBody = {
     metadata: { title: 'Pictures', author: null },
@@ -557,16 +742,23 @@ test('worker embeds converted images in the EPUB', async () => {
     '/bookmarks/7.epub?lang=en&url=https://news.example.org/story',
     { Authorization: 'Bearer tok' },
     [200, parsedBody],
-    { 'https://news.example.org/a.jpg': [200, jpegBytes(800, 600), true] },
+    {
+      'https://news.example.org/a.jpg': [200, jpegBytes(800, 600), true],
+      'cover:https://news.example.org/a.jpg': [200, jpegBytes(528, 800), true],
+    },
   );
   assert.equal(response.status, 200);
-  assert.equal(response.headers.get('X-Images'), '2 found, 1 kept, 1 converted');
+  assert.equal(response.headers.get('X-Images'), '2 found, 1 kept, 1 converted, cover 528x800 converted');
   assert.ok(seen.some((s) => s.url === 'https://news.example.org/a.jpg' && s.transform), 'relative src resolved against the article URL');
   const files = readZip(new Uint8Array(await response.arrayBuffer()));
   const image = files.find((f) => f.name === 'OEBPS/images/1.jpg');
   assert.ok(image, 'image packed');
   assert.equal(image.method, 0, 'images are stored, not deflated');
+  // No lead image: the first kept image becomes the cover, converted for it.
   assert.match(files[2].text, /<item id="image1" href="images\/1\.jpg" media-type="image\/jpeg"\/>/);
+  assert.match(files[2].text, /<item id="image2" href="images\/cover\.jpg" media-type="image\/jpeg" properties="cover-image"\/>/);
+  assert.match(files[2].text, /<meta name="cover" content="image2"\/>/);
+  assert.equal(files.find((f) => f.name === 'OEBPS/images/cover.jpg').method, 0, 'cover stored');
   const article = files.find((f) => f.name === 'OEBPS/article.xhtml').text;
   assert.match(article, /<p>Before <img src="images\/1\.jpg" alt="A &amp; B"\/> after<\/p><figcaption>Cap<\/figcaption>/);
   assertWellFormedXml(article, 'article with images');
@@ -589,6 +781,64 @@ async function exitEvent(body, answers = {}, auth = 'Bearer tok') {
   const response = await readerExit(request, fakeFetch);
   return { status: response.status, json: await response.json(), calls };
 }
+
+test('worker uses the lead image as the cover, without putting it in the text', async () => {
+  const parsedBody = {
+    metadata: { title: 'Lead', thumbnail: 'https://cdn.example/lead.jpg' },
+    content: { body: '<p>Text <img src="https://cdn.example/inline.jpg"></p>', direction: 'ltr' },
+  };
+  const { response, seen } = await callWorker(
+    '/bookmarks/8.epub?lang=en&url=https://news.example.org/story',
+    { Authorization: 'Bearer tok' },
+    [200, parsedBody],
+    {
+      'https://cdn.example/inline.jpg': [200, jpegBytes(800, 600), true],
+      'cover:https://cdn.example/lead.jpg': [200, jpegBytes(528, 800), true],
+    },
+  );
+  assert.equal(response.headers.get('X-Images'), '1 found, 1 kept, 1 converted, cover 528x800 converted');
+  assert.ok(seen.some((s) => s.url === 'https://cdn.example/lead.jpg' && s.transform));
+  const files = readZip(new Uint8Array(await response.arrayBuffer()));
+  const opf = files[2].text;
+  assert.match(opf, /<item id="image1" href="images\/1\.jpg" media-type="image\/jpeg"\/>/);
+  assert.match(opf, /<item id="image2" href="images\/cover\.jpg" media-type="image\/jpeg" properties="cover-image"\/>/);
+  assert.match(opf, /<meta name="cover" content="image2"\/>/);
+  const article = files.find((f) => f.name === 'OEBPS/article.xhtml').text;
+  assert.match(article, /images\/1\.jpg/);
+  assert.doesNotMatch(article, /cover\.jpg/, 'the cover is not repeated in the text');
+
+  // No images at all: no cover.
+  const plain = await callWorker('/bookmarks/9.epub?lang=en&url=https://n.example/x', { Authorization: 'Bearer tok' }, [
+    200,
+    { metadata: { title: 'Plain' }, content: { body: '<p>Only text</p>' } },
+  ]);
+  assert.equal(plain.response.headers.get('X-Images'), '0 found, 0 kept, 0 converted, no cover');
+  assert.doesNotMatch(readZip(new Uint8Array(await plain.response.arrayBuffer()))[2].text, /cover/);
+});
+
+test('fetchCover sizes the cover for the reader screen, or keeps a usable original', async () => {
+  assert.deepEqual(
+    { width: COVER_TRANSFORM.width, height: COVER_TRANSFORM.height, fit: COVER_TRANSFORM.fit, format: COVER_TRANSFORM.format, saturation: COVER_TRANSFORM.saturation },
+    { width: 528, height: 800, fit: 'cover', format: 'baseline-jpeg', saturation: 0 },
+  );
+  const answer = (converted, original) => async (url, init) => {
+    const [status, bytes, resized] = init.cf ? converted : original;
+    return new Response(bytes, { status, headers: resized ? { 'cf-resized': 'internal=ok' } : {} });
+  };
+  let cover = await fetchCover('https://i/c', '', answer([200, jpegBytes(528, 800), true], [500, new Uint8Array(0)]));
+  assert.deepEqual({ w: cover.width, h: cover.height, resized: cover.resized, ext: cover.ext }, { w: 528, h: 800, resized: true, ext: 'jpg' });
+
+  // Not converted (local dev, quota used): a baseline JPEG within 2048 x 3072 is kept.
+  cover = await fetchCover('https://i/c', '', answer([415, new Uint8Array(0)], [200, jpegBytes(1200, 900)]));
+  assert.deepEqual({ w: cover.width, resized: cover.resized }, { w: 1200, resized: false });
+  // Progressive, too large, or not a JPEG: no cover.
+  assert.equal(await fetchCover('https://i/c', '', answer([415, new Uint8Array(0)], [200, jpegBytes(1200, 900, 0xc2)])), null);
+  assert.equal(await fetchCover('https://i/c', '', answer([415, new Uint8Array(0)], [200, jpegBytes(3000, 2000)])), null);
+  assert.equal(await fetchCover('https://i/c', '', answer([415, new Uint8Array(0)], [200, pngBytes(600, 800)])), null);
+  // An unconverted answer to the conversion request is not taken as converted.
+  cover = await fetchCover('https://i/c', '', answer([200, jpegBytes(1600, 1200)], [200, jpegBytes(1600, 1200)]));
+  assert.equal(cover.resized, false);
+});
 
 test('reader.exit sends progress and archives articles left on the end page', async () => {
   let r = await exitEvent({ instapaper_id: '42', percent: '40', ts: '1761400000' });

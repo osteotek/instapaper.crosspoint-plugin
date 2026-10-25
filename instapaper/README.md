@@ -119,8 +119,14 @@ instead.
 With the converter, articles include their images, whether you fetch them on
 the reader or sync them on the web page. The converter has Cloudflare turn
 each image into a grayscale JPEG of at most 800 x 800 pixels, which the
-reader decodes quickly and at full detail. To hide images, use the reader's
-own image setting.
+reader decodes quickly and at full detail. Each article also gets a cover, made
+from its lead image (or its first image) and sized for the reader's cover
+screen and Home thumbnails: a 528 x 800 grayscale picture, cropped around the
+most important part. To hide images, use the reader's own image setting.
+
+Articles you fetch on the reader are titled with the title of the web page,
+without a trailing site name; articles from **Sync now** use the title
+Instapaper lists. The file name always uses the title Instapaper lists.
 
 ## Progress and archiving
 
@@ -139,8 +145,8 @@ does not turn on Wi-Fi by itself for this, to save battery.
 This works for articles downloaded after you turn it on (each needs a small
 `.meta.json` file next to it, written at download time). After turning the
 option on or off, restart the reader once: the reader reads this setting when
-it starts. With **Delete articles that left the folder** on, the next web sync
-also removes archived articles from the SD card.
+it starts. With **Delete articles archived or deleted in Instapaper** on, the
+next web sync also removes them from the SD card.
 
 ## Use on the web page
 
@@ -149,14 +155,31 @@ also removes archived articles from the SD card.
 2. Tap **Sync now**. A progress bar under the button shows which article is
    downloading. Keep the page open until it says how many were added; any
    skipped articles are listed with the reason. Articles are saved in
-   `/Instapaper/`. Articles that are already on the card are not downloaded
+   `/Instapaper/`, named the way the reader names them. Articles already on
+   the card, whether synced here or fetched on the reader, are not downloaded
    again; skipped ones are tried again on the next sync.
 
-**Delete articles that left the folder:** when this is on, a sync deletes
-articles that the web sync downloaded from the chosen folder and that are no
-longer among its newest articles, for example because you archived them in
-Instapaper. Files you added yourself, or fetched on the reader, are never
-deleted.
+**Delete articles archived or deleted in Instapaper:** when this is on, a sync
+asks Instapaper what changed since the last sync and deletes the Instapaper
+articles on the card that were archived or deleted, wherever you did it: in
+Instapaper's apps, or on the reader with the archive option. The first sync
+with it on looks back 30 days. Articles in the folder you sync are kept, so
+syncing Archive keeps your archived articles. Files that did not come from
+this plugin are never deleted.
+
+## Highlights
+
+Tap **Send highlights** to send the passages you highlighted on the reader in
+Instapaper articles to Instapaper. Highlights that were sent before are not
+sent again. It works for articles downloaded with this version of the plugin
+or later (it finds them by their `.meta.json` file).
+
+- Without Instapaper Premium, Instapaper accepts five highlights a month. The
+  card says when the limit is reached; the rest are sent the next month.
+- If the same passage appears more than once in an article, Instapaper marks
+  its first occurrence.
+- Notes are not sent, and highlights deleted on the reader stay in
+  Instapaper.
 
 An app on your network can also start a web sync: send a `sync` job for the
 `instapaper` plugin to `/api/plugin-jobs` while the reader's web page (or
@@ -177,10 +200,10 @@ An app on your network can also start a web sync: send a `sync` job for the
   language, or English.
 - Without the converter, a web sync skips an article whose EPUB would be over
   256 KB, roughly 100,000 words of English. With it, there is no size limit.
-- Progress and archiving need the converter. Likes, highlights and folders
-  are not sent back to Instapaper.
-- The web sync and the reader name files slightly differently, so fetching on
-  the reader an article that the web sync already saved can give a second copy.
+- Progress and archiving need the converter. Likes and folders are not sent
+  back to Instapaper.
+- Fetching on the reader an article that is already on the card replaces it
+  with a fresh copy (the reader's catalog does not check).
 
 ## Privacy
 
