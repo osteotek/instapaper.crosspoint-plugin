@@ -1,0 +1,46 @@
+{
+  "title": "Articles for Instapaper",
+  "description": "Read your saved Instapaper articles as EPUB.",
+  "version": "1.0.0",
+  "token": {
+    "file": "config.json",
+    "path": "token"
+  },
+  "config": {
+    "file": "config.json"
+  },
+  "browse": {
+    "format": "json",
+    "url": "https://www.instapaper.com/api/2/bookmarks?section=home&limit=100",
+    "method": "GET",
+    "headers": {
+      "Authorization": "Bearer {token}"
+    },
+    "items": "bookmarks",
+    "fields": {
+      "title": "title",
+      "author": "author",
+      "id": "id",
+      "url": "url"
+    },
+    "page_size": 8,
+    "lists": [
+      { "title": "Home" },
+      { "title": "Archive", "url": "https://www.instapaper.com/api/2/bookmarks?section=archive&limit=100" },
+      { "title": "Liked", "url": "https://www.instapaper.com/api/2/bookmarks?section=liked&limit=100" }
+    ]
+  },
+  "download": {
+    "url": "{cfg.worker_url}/bookmarks/{id}.epub?lang={cfg.lang}&url={url}",
+    "method": "GET",
+    "headers": {
+      "Authorization": "Bearer {token}"
+    },
+    "dest_dir": "/Instapaper",
+    "filename": "{title}.epub",
+    "sidecar": {
+      "path": "{dest}.meta.json",
+      "body": "{\"instapaper_id\":\"{id}\"}"
+    }
+  }
+}

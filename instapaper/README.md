@@ -1,0 +1,187 @@
+# Articles for Instapaper
+
+Downloads your saved Instapaper articles to the reader as EPUB books. You
+sync them from the reader's web page. With the optional converter, articles
+include their images, you can also download them on the reader itself, and
+the reader can send your reading progress to Instapaper and archive the
+articles you finish.
+
+## What you need
+
+- An Instapaper account.
+- For the optional converter: a free Cloudflare account, and a computer with
+  [Node.js](https://nodejs.org) 24 or newer to deploy it once.
+
+## Step 1: Get an Instapaper access token
+
+The plugin uses Instapaper's API with your own access token. Instapaper gives
+one to the owner of an "application", which you create for yourself. It takes
+a minute and needs no approval.
+
+1. Sign in on [instapaper.com](https://www.instapaper.com).
+2. Open the [Applications](https://www.instapaper.com/developers/applications)
+   page and create a new application. Any name works, for example
+   "CrossPoint". You do not need callback URIs. A new application is in
+   **Owner Only** mode: it works only with your own account, which is all the
+   plugin needs. Do not submit it for review.
+3. Instapaper shows a client ID and a client secret. The plugin does not need
+   them.
+4. Open the application and select **Generate access token**. Copy the token
+   right away: Instapaper shows it only once. If you lose it, generate a new
+   one; the old one stops working.
+
+## Step 2: Install the plugin and connect
+
+1. On the reader, turn on **Settings > Connectivity > Plugins**.
+2. Copy the `instapaper` folder to `/plugins/` on the SD card.
+3. On the reader, start **File Transfer**. Open the web address it shows in a
+   browser on the same network, and go to **Settings**.
+4. On the **Articles for Instapaper** card, paste the token and tap
+   **Connect**. The card shows "Connected as" with your Instapaper username.
+
+You can now sync text-only articles from this page (see
+[Use on the web page](#use-on-the-web-page)).
+
+## Step 3 (optional): Set up the converter
+
+The converter is a small Cloudflare Worker, included in this plugin's source
+repository, that turns an Instapaper article and its images into an EPUB.
+With it, articles include their images, there is no size limit, and you can
+download articles on the reader itself. Without it, the web page builds
+text-only EPUBs. The reader cannot do this alone: Instapaper only gives
+article text as JSON, which the reader cannot open.
+
+The Worker runs on your own Cloudflare account. The free plan is enough.
+
+1. Create a free account at
+   [dash.cloudflare.com/sign-up](https://dash.cloudflare.com/sign-up) and
+   confirm your email address.
+2. On your computer, install [Node.js](https://nodejs.org) 24 or newer.
+3. Download or clone this plugin's source repository, and open a terminal in
+   its folder (the one with `cloudflare.config.ts`).
+4. Install the tools:
+
+   ```sh
+   npm install
+   ```
+
+5. Sign in to Cloudflare and follow the prompts (it opens a browser window
+   to confirm):
+
+   ```sh
+   npx cf auth login
+   ```
+
+6. Deploy the converter:
+
+   ```sh
+   npx cf deploy
+   ```
+
+   If you can use more than one Cloudflare account, it asks which one. If it
+   asks you to choose a `workers.dev` subdomain, pick any name: it becomes
+   part of the address. At the end it prints the converter's address, for
+   example `https://instapaper-epub.yourname.workers.dev`.
+7. Check it: open that address in a browser. It should say "Articles for
+   Instapaper converter".
+8. On the reader's web page, on the **Articles for Instapaper** card, find
+   **Converter (optional)**. Turn on **Use a Cloudflare Worker converter**,
+   paste the address and tap **Save converter**. The card checks that the
+   converter answers.
+9. Optional: to send reading progress and archive finished articles (see
+   [Progress and archiving](#progress-and-archiving)), also turn on **Send
+   reading progress and archive finished articles** and tap **Save
+   converter**. Then restart the reader once.
+
+To update the converter later, get the new version of the repository and run
+`npx cf deploy` again. To stop using it, turn the option off and tap **Save
+converter**; the address is kept for later. To remove it completely, delete
+the `instapaper-epub` Worker in the Cloudflare dashboard under
+**Workers & Pages**.
+
+Anyone who knows the address can use the converter with their own Instapaper
+token, which counts against your Cloudflare free plan. Keep the address to
+yourself.
+
+## Use on the reader (with the converter)
+
+1. Open **Home > Plugins > Articles for Instapaper**.
+2. Pick **Home**, **Archive** or **Liked**. The newest 100 articles are listed,
+   8 per page.
+3. Select an article and press **Fetch**. It is saved in `/Instapaper/` and
+   appears in **Browse Files** and the library.
+
+With the converter, articles include their images, whether you fetch them on
+the reader or sync them on the web page. The converter has Cloudflare turn
+each image into a grayscale JPEG of at most 800 x 800 pixels, which the
+reader decodes quickly and at full detail. To hide images, use the reader's
+own image setting.
+
+## Progress and archiving
+
+With the converter and **Send reading progress and archive finished
+articles** on:
+
+- When you leave an Instapaper article on the reader, its reading position is
+  sent to Instapaper, so its other apps continue where you stopped.
+- Every article ends with an **End of article** page. Leave the article on
+  that page, and it moves to your Instapaper Archive.
+
+The reader sends this the next time it connects to Wi-Fi: when you open the
+plugin on the reader, start File Transfer, or use another Wi-Fi feature. It
+does not turn on Wi-Fi by itself for this, to save battery.
+
+This works for articles downloaded after you turn it on (each needs a small
+`.meta.json` file next to it, written at download time). After turning the
+option on or off, restart the reader once: the reader reads this setting when
+it starts. With **Delete articles that left the folder** on, the next web sync
+also removes archived articles from the SD card.
+
+## Use on the web page
+
+1. On the card, pick a folder (Home, Archive, Liked, or one of your own
+   folders) and how many of its newest articles to download.
+2. Tap **Sync now**. Articles are saved in `/Instapaper/`. Articles that are
+   already on the card are not downloaded again.
+
+**Delete articles that left the folder:** when this is on, a sync deletes
+articles that the web sync downloaded from the chosen folder and that are no
+longer among its newest articles, for example because you archived them in
+Instapaper. Files you added yourself, or fetched on the reader, are never
+deleted.
+
+An app on your network can also start a web sync: send a `sync` job for the
+`instapaper` plugin to `/api/plugin-jobs` while the reader's web page (or
+`/plugins-run`) is open.
+
+## Limits
+
+- Images need the converter. SVG drawings, icons smaller than 120 pixels, and
+  images that fail to download are left out. An article keeps at most 30
+  images.
+- Cloudflare's free plan converts 5,000 different images a month. After that,
+  only images the reader can show as they are (JPEG, PNG, GIF under 1 MB) are
+  kept until the next month.
+- PDFs and videos saved to Instapaper have no text, so they cannot be
+  downloaded. So are pages Instapaper cannot extract text from.
+- Your own folders are listed only on the web page. The reader lists Home,
+  Archive and Liked.
+- Instapaper has no article language, so the plugin guesses it from the
+  writing system, for hyphenation. Latin-script articles use your browser's
+  language, or English.
+- Without the converter, a web sync skips an article whose EPUB would be over
+  256 KB, roughly 100,000 words of English. With it, there is no size limit.
+- Progress and archiving need the converter. Likes, highlights and folders
+  are not sent back to Instapaper.
+- The web sync and the reader name files slightly differently, so fetching on
+  the reader an article that the web sync already saved can give a second copy.
+
+## Privacy
+
+The access token is stored in `config.json` in the plugin folder on the SD
+card. Anyone with the card, or with access to the reader's web page while File
+Transfer runs, can read it. With the converter, each download sends the token
+to it; it passes the token to Instapaper and keeps nothing.
+
+To stop the token from working, tap **Disconnect**, then revoke or regenerate
+it on the application's page on instapaper.com.
