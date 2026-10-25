@@ -14,8 +14,8 @@ This project is not made or endorsed by Instapaper.
 - `instapaper/plugin.js`: the Settings card (token, optional converter) and
   the web sync.
 - `instapaper/device.json`: the on-reader catalog. It lists Instapaper
-  directly and downloads each article through the converter Worker, so it
-  works only with the converter on.
+  directly and downloads each article through the converter Worker. The card
+  rewrites parts of it to match the converter settings (see below).
 - `instapaper/epub.js`: turns Instapaper's parsed HTML into an EPUB. One ES
   module shared by the web card (loaded with `import()`), the Worker and the
   tests.
@@ -60,9 +60,26 @@ banner, which the web card checks before saving the address.
   text-only EPUB with `epub.js`.
 - **Lists.** The browse URLs have no `{page}`, so the reader fetches the
   newest 100 once and pages them locally (`plugincatalogpaging::isStaticFeed`).
-  Instapaper pages by `offset`, which the templates cannot express. Your own
-  folders are not listed: `browse.lists_url` is fetched without headers, so
-  it cannot carry the token.
+  Instapaper pages by `offset`, which the templates cannot express.
+- **Folders.** `browse.lists_url` points at the Worker's `GET /lists`, which
+  fetches `/folders` and answers in the reader's list-index shape
+  (`{"lists": [{title, url}]}`): Home, Archive, Liked, then one
+  `/bookmarks?folder_id=…&limit=100` list per folder. The reader fetches
+  `lists_url` without headers and expects that exact shape
+  (`PluginCatalogActivity::loadBrowseListIndex`), which Instapaper's own
+  `/folders` cannot meet, so the token goes in the query string
+  (`lists_url: "{cfg.worker_url}/lists?token={token}"`). The reader logs the
+  URL, token included, when that request fails.
+- **List source follows the converter.** The reader loads `lists_url` only
+  when `browse.lists` is empty, so a manifest has one or the other. The
+  shipped `device.json` has fixed Home, Archive and Liked lists that go
+  straight to Instapaper, so listing works without the converter (Fetch then
+  fails: there is nothing to build the EPUB). With the converter on, the card
+  replaces them with `lists_url`. `manifestFor()` derives the whole
+  manifest state (lists and the `reader.exit` handler) from the settings; the
+  card applies it on Save converter and whenever it loads, which also repairs
+  a `device.json` overwritten by copying a new plugin version. Lists need no
+  restart; the event handler does.
 - **`url` comes last.** The reader puts `{url}` into the download URL without
   encoding it, so the Worker takes everything after `url=` as the article
   address. It is used only for the byline and `dc:source`.
@@ -162,6 +179,14 @@ running the firmware at `72ca92fe`. The browser was jsdom; `PluginHost.js.inc`,
   deployed Worker straight to the SD card, including the 443 KB 12-image
   article that the 256 KB page path could not save. With the converter off,
   the page built text-only EPUBs and the address was kept.
+- Folders: the deployed Worker's `/lists` returned Home, Archive, Liked,
+  Bitcoin and Economics, and 401 for a wrong token. The simulated reader's
+  plugin showed the same picker, and Economics listed its article.
+- Without the converter the simulated reader listed Home with its articles
+  straight from Instapaper, and Fetch failed with "Download failed". Turning
+  the converter on and off on the card switched `device.json` between
+  `lists_url` and the shipped lists, and the reader followed without a
+  restart.
 - Progress and archiving, end to end with a temporary bookmark (deleted
   afterwards): the card added the `reader.exit` handler, and after a restart
   the reader subscribed to it. The catalog download wrote the sidecar.

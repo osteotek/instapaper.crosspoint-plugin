@@ -8,6 +8,7 @@ import * as epub from '../instapaper/epub.js';
 import worker from '../worker/index.js';
 import { fetchImages, imageInfo, readerCanShow } from '../worker/images.js';
 import { readerExit } from '../worker/events.js';
+import { folderLists } from '../worker/lists.js';
 
 const root = new URL('../instapaper/', import.meta.url);
 const parseHtml = (html) => new JSDOM(html).window.document;
@@ -662,6 +663,55 @@ test('withExitEvents adds and removes the reader.exit handler', async () => {
   assert.deepEqual(JSON.parse(JSON.stringify(withExitEvents(on, false))), manifest);
 });
 
+test('worker /lists answers the reader with Home, Archive, Liked and your folders', async () => {
+  const calls = [];
+  const fakeFetch = async (url, init) => {
+    calls.push({ url, auth: init.headers.Authorization });
+    if (init.headers.Authorization !== 'Bearer tok') return new Response('{}', { status: 401 });
+    return new Response(JSON.stringify({ folders: [{ id: 2358617, title: 'Bitcoin', count: 0 }, { id: 2358619, title: 'Economics & more', count: 1 }] }));
+  };
+  const call = (path, headers = {}) => folderLists(new Request('https://w.example' + path, { headers }), fakeFetch);
+
+  const r = await call('/lists?token=tok');
+  assert.equal(r.status, 200);
+  assert.deepEqual(calls, [{ url: 'https://www.instapaper.com/api/2/folders', auth: 'Bearer tok' }]);
+  const { lists } = await r.json();
+  assert.deepEqual(
+    lists.map((l) => l.title + ' -> ' + l.url.replace('https://www.instapaper.com/api/2/bookmarks?', '')),
+    [
+      'Home -> section=home&limit=100',
+      'Archive -> section=archive&limit=100',
+      'Liked -> section=liked&limit=100',
+      'Bitcoin -> folder_id=2358617&limit=100',
+      'Economics & more -> folder_id=2358619&limit=100',
+    ],
+  );
+  assert.equal((await call('/lists', { Authorization: 'Bearer tok' })).status, 200, 'a header works too');
+  assert.equal((await call('/lists')).status, 401);
+  assert.equal((await call('/lists?token=bad')).status, 401);
+  const routed = await worker.fetch(new Request('https://w.example/lists', { method: 'POST' }));
+  assert.equal(routed.status, 405);
+});
+
+test('manifestFor switches the reader lists and events with the converter', async () => {
+  const { manifestFor } = await loadPlugin();
+  const shipped = JSON.parse(await readFile(new URL('device.json', root), 'utf8'));
+  const plain = (o) => JSON.parse(JSON.stringify(o));
+  assert.deepEqual(plain(manifestFor(shipped, {})), shipped, 'the shipped file matches the default settings');
+
+  const converter = { use_worker: true, worker_address: 'https://w', worker_url: 'https://w' };
+  const on = plain(manifestFor(shipped, converter));
+  assert.equal(on.browse.lists, undefined);
+  assert.equal(on.browse.lists_url, '{cfg.worker_url}/lists?token={token}');
+  assert.equal(on.browse.url, shipped.browse.url);
+  assert.equal(on.events, undefined, 'archiving is a separate switch');
+
+  const archiving = plain(manifestFor(shipped, Object.assign({ archive: true }, converter)));
+  assert.ok(archiving.events['reader.exit']);
+  assert.deepEqual(plain(manifestFor(archiving, { use_worker: false, worker_address: 'https://w', archive: true })), shipped, 'converter off: back to the shipped file');
+  assert.equal(manifestFor(shipped, { archive: true }).events, undefined, 'archiving needs the converter');
+});
+
 test('device.json lists Instapaper on the reader and downloads through the worker', async () => {
   const manifest = JSON.parse(await readFile(new URL('device.json', root), 'utf8'));
   const plugin = JSON.parse(await readFile(new URL('manifest.json', root), 'utf8'));
@@ -671,10 +721,13 @@ test('device.json lists Instapaper on the reader and downloads through the worke
   assert.equal(manifest.browse.headers.Authorization, 'Bearer {token}');
   assert.equal(manifest.browse.items, 'bookmarks');
   // No {page}: the reader fetches the list once and pages it locally.
-  for (const url of [manifest.browse.url].concat(manifest.browse.lists.map((l) => l.url).filter(Boolean))) {
-    assert.match(url, /^https:\/\/www\.instapaper\.com\/api\/2\/bookmarks\?section=(home|archive|liked)&limit=100$/);
-  }
+  assert.equal(manifest.browse.url, 'https://www.instapaper.com/api/2/bookmarks?section=home&limit=100');
+  // Shipped for use without the converter: lists straight from Instapaper.
   assert.deepEqual(manifest.browse.lists.map((l) => l.title), ['Home', 'Archive', 'Liked']);
+  for (const l of manifest.browse.lists.filter((l) => l.url)) {
+    assert.match(l.url, /^https:\/\/www\.instapaper\.com\/api\/2\/bookmarks\?section=(archive|liked)&limit=100$/);
+  }
+  assert.equal(manifest.browse.lists_url, undefined);
   // url must stay last: the worker reads it raw to the end of the query.
   assert.equal(manifest.download.url, '{cfg.worker_url}/bookmarks/{id}.epub?lang={cfg.lang}&url={url}');
   assert.equal(manifest.download.headers.Authorization, 'Bearer {token}');

@@ -103,13 +103,18 @@ Anyone who knows the address can use the converter with their own Instapaper
 token, which counts against your Cloudflare free plan. Keep the address to
 yourself.
 
-## Use on the reader (with the converter)
+## Use on the reader
 
 1. Open **Home > Plugins > Articles for Instapaper**.
-2. Pick **Home**, **Archive** or **Liked**. The newest 100 articles are listed,
-   8 per page.
-3. Select an article and press **Fetch**. It is saved in `/Instapaper/` and
-   appears in **Browse Files** and the library.
+2. Pick **Home**, **Archive** or **Liked**; with the converter, your own
+   folders are listed too, fresh each time you open the plugin. The newest
+   100 articles of each are listed, 8 per page.
+3. With the converter, select an article and press **Fetch**. It is saved in
+   `/Instapaper/` and appears in **Browse Files** and the library.
+
+Without the converter the reader can list your articles but not download
+them: **Fetch** shows "Download failed". Use **Sync now** on the web page
+instead.
 
 With the converter, articles include their images, whether you fetch them on
 the reader or sync them on the web page. The converter has Cloudflare turn
@@ -167,8 +172,6 @@ An app on your network can also start a web sync: send a `sync` job for the
   kept until the next month.
 - PDFs and videos saved to Instapaper have no text, so they cannot be
   downloaded. So are pages Instapaper cannot extract text from.
-- Your own folders are listed only on the web page. The reader lists Home,
-  Archive and Liked.
 - Instapaper has no article language, so the plugin guesses it from the
   writing system, for hyphenation. Latin-script articles use your browser's
   language, or English.
@@ -184,7 +187,10 @@ An app on your network can also start a web sync: send a `sync` job for the
 The access token is stored in `config.json` in the plugin folder on the SD
 card. Anyone with the card, or with access to the reader's web page while File
 Transfer runs, can read it. With the converter, each download sends the token
-to it; it passes the token to Instapaper and keeps nothing.
+to it; it passes the token to Instapaper and keeps nothing. To list your
+folders, the reader sends the token in the converter's web address, because
+that request cannot carry headers. The address only travels over HTTPS, but
+the reader writes it to its debug log if the request fails.
 
 To stop the token from working, tap **Disconnect**, then revoke or regenerate
 it on the application's page on instapaper.com.

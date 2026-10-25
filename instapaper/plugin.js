@@ -75,6 +75,33 @@
     return out;
   }
 
+  // The reader's list picker. Without the converter it lists Home, Archive
+  // and Liked straight from Instapaper. With it, the converter's /lists adds
+  // your folders (worker/lists.js); the reader fetches browse.lists_url
+  // without headers, hence the token in the query. The reader only loads
+  // lists_url when browse.lists is empty, so it is one or the other.
+  const DIRECT_LISTS = [
+    { title: 'Home' },
+    { title: 'Archive', url: API_BASE + '/bookmarks?section=archive&limit=100' },
+    { title: 'Liked', url: API_BASE + '/bookmarks?section=liked&limit=100' },
+  ];
+  const WORKER_LISTS_URL = '{cfg.worker_url}/lists?token={token}';
+
+  function withListSource(manifest, useWorker) {
+    const browse = Object.assign({}, manifest.browse);
+    delete browse.lists;
+    delete browse.lists_url;
+    if (useWorker) browse.lists_url = WORKER_LISTS_URL;
+    else browse.lists = DIRECT_LISTS;
+    return Object.assign({}, manifest, { browse });
+  }
+
+  // device.json as the saved settings need it.
+  function manifestFor(manifest, cfg) {
+    const converter = converterSettings(cfg);
+    return withExitEvents(withListSource(manifest, converter.use_worker), converter.use_worker && !!cfg.archive);
+  }
+
   // The article's ID next to the book ("<book>.meta.json"), for the event.
   function sidecarFor(file, bookmarkId) {
     return [file + '.meta.json', bytesToBase64(utf8Encoder.encode(JSON.stringify({ instapaper_id: String(bookmarkId) })))];
@@ -319,6 +346,8 @@
       normalizeWorkerUrl,
       converterSettings,
       withExitEvents,
+      withListSource,
+      manifestFor,
       account,
       listSections,
       syncArticles,
@@ -492,16 +521,24 @@
 
     const writeConfig = (cfg) => api.writeFile(CONFIG_PATH, bytesToBase64(utf8Encoder.encode(JSON.stringify(cfg))));
 
-    // Adds or removes the reader.exit handler in device.json. Returns whether
-    // the file changed; the reader reads event handlers at boot.
-    async function setExitEvents(enabled) {
-      const r = await fetch(api.pluginFile('device.json'));
-      if (!r.ok) throw new Error('could not read device.json (HTTP ' + r.status + ')');
-      const manifest = JSON.parse(await r.text());
-      if (!!manifest.events === enabled) return false;
-      const text = JSON.stringify(withExitEvents(manifest, enabled), null, 2) + '\n';
-      await api.writeFile(api.dir + '/device.json', bytesToBase64(utf8Encoder.encode(text)));
-      return true;
+    // Brings device.json in line with `cfg`. Returns whether the reader must
+    // restart: it reads event handlers at boot, but re-reads the lists every
+    // time the plugin opens. Runs one at a time, since the card also calls it
+    // when it loads.
+    let manifestQueue = Promise.resolve();
+    function syncManifest(cfg) {
+      const run = manifestQueue.then(async () => {
+        const r = await fetch(api.pluginFile('device.json'));
+        if (!r.ok) throw new Error('could not read device.json (HTTP ' + r.status + ')');
+        const before = JSON.parse(await r.text());
+        const after = manifestFor(before, cfg);
+        if (JSON.stringify(after) === JSON.stringify(before)) return false;
+        const text = JSON.stringify(after, null, 2) + '\n';
+        await api.writeFile(api.dir + '/device.json', bytesToBase64(utf8Encoder.encode(text)));
+        return !!before.events !== !!after.events;
+      });
+      manifestQueue = run.catch(() => {});
+      return run;
     }
 
     function showConverter(cfg) {
@@ -538,6 +575,11 @@
       showConverter(cfg);
       showSections(SECTIONS, cfg.section);
       status('Connected as ' + cfg.username + '.');
+      // A newly copied plugin version brings its default device.json.
+      syncManifest(cfg).then(
+        (restart) => restart && status('Connected as ' + cfg.username + '. Restart the reader once to apply your settings.'),
+        (e) => status('Connected as ' + cfg.username + '. Could not update the reader settings: ' + e.message + '.'),
+      );
       listSections(api, cfg).then(
         (sections) => showSections(sections, el('ip-section').value || cfg.section),
         (e) => status('Connected as ' + cfg.username + '. Could not load your folders: ' + e.message + '.'),
@@ -660,10 +702,10 @@
         const messages = [
           use
             ? 'Converter on. Sync now includes images, and Home > Plugins > Articles for Instapaper works on the reader.'
-            : 'Converter off. Sync saves text only, and downloads on the reader will fail until you turn it on.',
+            : 'Converter off. Sync saves text only. The reader can list your articles but not download them.',
         ];
         if (archive && !use) messages.push('Progress and archiving need the converter, so they are off.');
-        if (await setExitEvents(use && archive)) {
+        if (await syncManifest(cfg)) {
           messages.push('Restart the reader once so it picks up the change to progress and archiving.');
         }
         showConverterResult(messages.join(' '));
