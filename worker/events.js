@@ -9,7 +9,7 @@
 
 const INSTAPAPER_API = 'https://www.instapaper.com/api/2';
 // Progress reaches 100% only on the "End of article" page the plugin adds to
-// every article (instapaper.crosspoint-plugin/epub.js), so this means "turned to the end".
+// every article (src/epub.js), so this means "turned to the end".
 const ARCHIVE_AT = 100;
 
 function jsonResponse(status, value) {

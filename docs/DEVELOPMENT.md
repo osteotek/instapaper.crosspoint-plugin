@@ -11,18 +11,24 @@ them, and how they were tested. The user guide is the repository
   downloads every installed file.
 - `docs/DEVELOPMENT.md`: these notes.
 - `instapaper.crosspoint-plugin/manifest.json`: title, version, and web Settings mount.
-- `instapaper.crosspoint-plugin/plugin.js`: the Settings card (token, optional converter) and
-  the web sync.
+- `src/plugin.js`: the Settings card (token, optional converter) and the web
+  sync. Edit this; `instapaper.crosspoint-plugin/plugin.js` is its minified
+  build.
 - `instapaper.crosspoint-plugin/device.json`: the on-reader catalog. It lists Instapaper
   directly and downloads each article through the converter Worker. The card
   rewrites parts of it to match the converter settings (see below).
-- `instapaper.crosspoint-plugin/epub.js`: turns Instapaper's parsed HTML into an EPUB. One ES
-  module shared by the web card (loaded with `import()`), the Worker and the
-  tests.
+- `src/epub.js`: turns Instapaper's parsed HTML into an EPUB. One ES module
+  shared by the web card (loaded with `import()`), the Worker and the tests.
+  `instapaper.crosspoint-plugin/epub.js` is its minified build.
+- `scripts/build.mjs`: `npm run build` minifies `src/plugin.js` and
+  `src/epub.js` with esbuild into the payload folder. The build is committed,
+  because Plugin Hub installs the payload folder exactly as tagged.
 - `worker/`: the converter, a Cloudflare Worker. `index.js` handles the
   request; `images.js` fetches and converts images. `cloudflare.config.ts`
   configures it: `cf dev` runs it locally and `cf deploy` publishes it.
 - `test/`: Node tests. Run `npm install`, then `npm test` (Node 22 or newer).
+  They test `src/`, fail when the built files are stale, and run a sync on
+  the minified files.
 
 ## Instapaper API
 
@@ -179,9 +185,11 @@ banner, which the web card checks before saving the address.
   through the relay. 400 means Instapaper already has it; 403 is the free
   plan's five-a-month limit and stops the run.
 - **Page load.** The reader serves plugin files uncompressed every time its
-  Settings page opens, so the card loads `epub.js` (20 KB) only on the first
-  sync, and the installed README is a short summary. Highlights, the
-  converter settings and the rest of the card do not need `epub.js`.
+  Settings page opens. So the installed JavaScript is minified (`plugin.js`
+  42 KB to 21 KB, `epub.js` 20 KB to 10 KB), the card loads `epub.js` only
+  on the first sync (highlights, the converter settings and the rest of the
+  card do not need it), and the installed README is a short summary. Each
+  minified file starts with a comment naming its version and source file.
 - **Language.** The parse response has no language. The plugin uses the
   dominant script (Cyrillic, Greek, Hebrew, Arabic, CJK), else the browser's
   language when it uses Latin script, else English.
@@ -269,9 +277,10 @@ To publish a version:
    `instapaper.crosspoint-plugin/manifest.json`, `instapaper.crosspoint-plugin/device.json`
    and `package.json` (`npm test` checks they agree), and list any new runtime
    file in the manifest's `files`.
-2. Commit, tag `vX.Y.Z`, push both, and publish a GitHub Release for the tag
+2. Run `npm run build` (the minified files carry the version) and `npm test`.
+3. Commit, tag `vX.Y.Z`, push both, and publish a GitHub Release for the tag
    (not a draft or prerelease).
-3. Plugin Hub's catalog refresh, every three hours, picks it up.
+4. Plugin Hub's catalog refresh, every three hours, picks it up.
 
 The converter is deployed separately (`cf deploy`); each user runs their own.
 

@@ -4,16 +4,19 @@ import test from 'node:test';
 import vm from 'node:vm';
 import { inflateRawSync, crc32 } from 'node:zlib';
 import { JSDOM } from 'jsdom';
-import * as epub from '../instapaper.crosspoint-plugin/epub.js';
+import * as epub from '../src/epub.js';
 import worker from '../worker/index.js';
 import { COVER_TRANSFORM, fetchCover, fetchImages, imageInfo, readerCanShow } from '../worker/images.js';
 import { readerExit } from '../worker/events.js';
 import { folderLists } from '../worker/lists.js';
+import { buildFiles } from '../scripts/build.mjs';
 
 const root = new URL('../instapaper.crosspoint-plugin/', import.meta.url);
 const parseHtml = (html) => new JSDOM(html).window.document;
 
-async function loadPlugin() {
+// Loads the readable source by default; `built` loads the minified copy that
+// is installed on the reader.
+async function loadPlugin(built = false) {
   const hooks = {};
   let render = null;
   const context = vm.createContext({
@@ -29,7 +32,8 @@ async function loadPlugin() {
     Response,
     CompressionStream,
   });
-  vm.runInContext(await readFile(new URL('plugin.js', root), 'utf8'), context, { filename: 'plugin.js' });
+  const file = built ? new URL('plugin.js', root) : new URL('../src/plugin.js', import.meta.url);
+  vm.runInContext(await readFile(file, 'utf8'), context, { filename: 'plugin.js' });
   assert.equal(typeof render, 'function', 'plugin.js should register a render function');
   return hooks;
 }
@@ -983,6 +987,37 @@ test('device.json lists Instapaper on the reader and downloads through the worke
   assert.equal(manifest.download.headers.Authorization, 'Bearer {token}');
   assert.equal(manifest.download.filename, '{title}.epub');
   assert.deepEqual(manifest.download.sidecar, { path: '{dest}.meta.json', body: '{"instapaper_id":"{id}"}' });
+});
+
+test('the installed files are the current minified build of src/', async () => {
+  const built = await buildFiles();
+  for (const [name, code] of Object.entries(built)) {
+    const installed = await readFile(new URL(name, root), 'utf8');
+    assert.equal(installed, code, name + ' is stale: run npm run build');
+    assert.ok(code.length < 0.6 * (await readFile(new URL('../src/' + name, import.meta.url), 'utf8')).length, name + ' is minified');
+  }
+});
+
+test('the minified files work like the sources', async () => {
+  // plugin.js registers its card and exposes the same functions.
+  const minified = await loadPlugin(true);
+  const source = await loadPlugin();
+  assert.deepEqual(Object.keys(minified).sort(), Object.keys(source).sort());
+  const manifest = JSON.parse(await readFile(new URL('device.json', root), 'utf8'));
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(minified.manifestFor(manifest, { use_worker: true, worker_address: 'https://w', archive: true }))),
+    JSON.parse(JSON.stringify(source.manifestFor(manifest, { use_worker: true, worker_address: 'https://w', archive: true }))),
+  );
+  // epub.js keeps its exports; a whole sync runs on the minified pair.
+  const builtEpub = await import(new URL('epub.js', root));
+  assert.deepEqual(Object.keys(builtEpub).sort(), Object.keys(epub).sort());
+  assert.equal(builtEpub.readerFileName('First: story'), 'First_ story.epub');
+  const device = fakeDevice({ bookmarks: [bookmark(1, 'One')], parses: { 1: parsed('<p>One <em>two</em></p>') } });
+  device.io.loadEpub = async () => builtEpub;
+  const result = await minified.syncArticles(Object.assign({ section: 'home', limit: 5 }, connected), device.api, device.io, () => {});
+  assert.deepEqual(Array.from(result.added), ['One']);
+  const files = readZip(device.sd.get('/Instapaper/One.epub'));
+  assert.match(files.find((f) => f.name === 'OEBPS/article.xhtml').text, /<p>One <em>two<\/em><\/p>/);
 });
 
 test('manifest meets the Plugin Hub contract', async () => {
