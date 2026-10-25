@@ -5,9 +5,10 @@
   "type": "module",
   "scripts": {
     "test": "node --test test/*.test.mjs",
-    "deploy": "cf deploy",
+    "deploy": "wrangler deploy",
     "dev": "cf dev",
-    "build": "node scripts/build.mjs"
+    "build:plugin": "node scripts/build.mjs",
+    "deploy:cf": "cf deploy"
   },
   "devDependencies": {
     "cf": "^1.0.0-beta.21",
@@ -18,7 +19,7 @@
   "dependencies": {
     "linkedom": "^0.18.14"
   },
-  "version": "1.0.2",
+  "version": "1.0.3",
   "repository": {
     "type": "git",
     "url": "https://github.com/osteotek/instapaper.crosspoint-plugin.git"

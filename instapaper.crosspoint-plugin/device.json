@@ -1,7 +1,7 @@
 {
   "title": "Articles for Instapaper",
   "description": "Read your saved Instapaper articles as EPUB.",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "token": {
     "file": "config.json",
     "path": "token"

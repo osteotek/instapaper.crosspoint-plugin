@@ -595,20 +595,14 @@
     ]);
     const converterHelp = steps(
       'ip-worker-help',
-      'How to set up the converter (once, about 10 minutes)',
+      'How to set up the converter (once, a few minutes)',
       false,
       [
-        'Create a free Cloudflare account at ' + link('https://dash.cloudflare.com/sign-up', 'dash.cloudflare.com/sign-up') + '.',
-        'On a computer, install ' + link('https://nodejs.org', 'Node.js') + ' 24 or newer.',
-        'Download the plugin\'s repository, ' +
-          link('https://github.com/osteotek/instapaper.crosspoint-plugin', 'github.com/osteotek/instapaper.crosspoint-plugin') +
-          ', and open a terminal in its folder (the one with ' +
-          code('cloudflare.config.ts') +
-          ').',
-        'Run ' + code('npm install') + ', then ' + code('npx cf auth login') + ' and sign in to Cloudflare.',
-        'Run ' +
-          code('npx cf deploy') +
-          '. If it asks for a workers.dev subdomain, pick any name. It prints the address, for example ' +
+        'Open ' +
+          link('https://deploy.workers.cloudflare.com/?url=https://github.com/osteotek/instapaper.crosspoint-plugin', 'Deploy to Cloudflare') +
+          '. Sign in to Cloudflare or create a free account, and connect your GitHub or GitLab account when asked.',
+        'Keep the suggested names and select <b>Deploy</b>.',
+        'When it finishes, open the Worker (<b>Workers &amp; Pages &gt; instapaper-epub</b>) and copy its address, for example ' +
           code('https://instapaper-epub.yourname.workers.dev') +
           '.',
         'Turn on the option above, paste the address and tap <b>Save converter</b>.',
@@ -616,7 +610,7 @@
       'Anyone who knows the address can use the converter with their own Instapaper token, which counts against ' +
         'your Cloudflare free plan, so keep it to yourself. ' +
         link('https://github.com/osteotek/instapaper.crosspoint-plugin', 'The full guide') +
-        ' has more detail.',
+        ' also shows how to deploy it from a computer.',
     );
 
     container.innerHTML =

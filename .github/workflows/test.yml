@@ -1,0 +1,21 @@
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      # Install scripts only fetch tools the tests do not use (workerd).
+      - run: npm ci --ignore-scripts
+      # Includes the checks that the built plugin files are current and that
+      # manifest.json, device.json and package.json agree on the version.
+      - run: npm test

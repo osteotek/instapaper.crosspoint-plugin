@@ -1,7 +1,7 @@
 // Builds the installed plugin files from src/: minified plugin.js and epub.js
 // in instapaper.crosspoint-plugin/. The reader serves plugin files
 // uncompressed every time its Settings page opens, so smaller files load
-// faster. Run `npm run build` after changing src/; `npm test` fails when the
+// faster. Run `npm run build:plugin` after changing src/; `npm test` fails when the
 // built files are out of date.
 import { readFile, writeFile } from 'node:fs/promises';
 import { transform } from 'esbuild';

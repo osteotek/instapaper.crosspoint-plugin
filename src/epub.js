@@ -454,6 +454,20 @@ export function withoutSiteSuffix(title, url) {
   return suffix && site && (site.startsWith(suffix) || suffix.startsWith(site)) ? match[1] : normalizeSpace(title);
 }
 
+// Instapaper's extracted author sometimes ends with the publication date,
+// glued on ("James MarriottSep 19, 2025"). Drops a trailing date in the
+// common forms; a month needs digits after it, so "Theresa May" stays.
+const MONTH = '(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sept?(?:ember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\\.?';
+const TRAILING_DATE = new RegExp(
+  '\\s*(?:' + MONTH + '\\s*\\d{1,2},?\\s+\\d{4}|\\d{1,2}\\s+' + MONTH + ',?\\s+\\d{4}|\\d{4}-\\d{2}-\\d{2})\\s*$',
+  'i',
+);
+
+export function cleanAuthor(name) {
+  const cleaned = normalizeSpace(name).replace(TRAILING_DATE, '').replace(/[\s,·|–—-]+$/, '');
+  return cleaned || normalizeSpace(name);
+}
+
 // The article fields epubFiles() needs, from a bookmark (any of id, title,
 // url, author, description, pubtime) and its /parse response. The bookmark's
 // title is the one Instapaper lists; the parsed one is the page's own title.
@@ -463,7 +477,7 @@ export function articleFromParse(bookmark, parsed) {
   return {
     id: bookmark.id,
     title: bookmark.title || withoutSiteSuffix(meta.title || '', bookmark.url),
-    author: (meta.author && meta.author.name) || bookmark.author || '',
+    author: cleanAuthor((meta.author && meta.author.name) || bookmark.author || ''),
     site: siteName(bookmark.url),
     url: bookmark.url || '',
     description: bookmark.description || meta.description || '',

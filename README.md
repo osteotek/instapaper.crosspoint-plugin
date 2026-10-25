@@ -12,8 +12,9 @@ articles you finish.
 ## What you need
 
 - An Instapaper account.
-- For the optional converter: a free Cloudflare account, and a computer with
-  [Node.js](https://nodejs.org) 24 or newer to deploy it once.
+- For the optional converter: a free Cloudflare account, and a GitHub or
+  GitLab account to deploy it with one button (or a computer with
+  [Node.js](https://nodejs.org) 24 or newer).
 
 ## Step 1: Get an Instapaper access token
 
@@ -60,49 +61,45 @@ article text as JSON, which the reader cannot open.
 
 The Worker runs on your own Cloudflare account. The free plan is enough.
 
-1. Create a free account at
-   [dash.cloudflare.com/sign-up](https://dash.cloudflare.com/sign-up) and
-   confirm your email address.
-2. On your computer, install [Node.js](https://nodejs.org) 24 or newer.
-3. Download or clone the plugin's repository,
-   [github.com/osteotek/instapaper.crosspoint-plugin](https://github.com/osteotek/instapaper.crosspoint-plugin), and open a
-   terminal in its folder (the one with `cloudflare.config.ts`).
-4. Install the tools:
+### Deploy it with the button
 
-   ```sh
-   npm install
-   ```
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/osteotek/instapaper.crosspoint-plugin)
 
-5. Sign in to Cloudflare and follow the prompts (it opens a browser window
-   to confirm):
-
-   ```sh
-   npx cf auth login
-   ```
-
-6. Deploy the converter:
-
-   ```sh
-   npx cf deploy
-   ```
-
-   If you can use more than one Cloudflare account, it asks which one. If it
-   asks you to choose a `workers.dev` subdomain, pick any name: it becomes
-   part of the address. At the end it prints the converter's address, for
+1. Select **Deploy to Cloudflare** above. Sign in to Cloudflare, or create a
+   free account.
+2. Connect your GitHub (or GitLab) account when asked. Cloudflare copies this
+   repository into your account and deploys the converter from it.
+3. Keep the suggested names and select **Deploy**. When it finishes, open the
+   Worker (**Workers & Pages > instapaper-epub**) and copy its address, for
    example `https://instapaper-epub.yourname.workers.dev`.
-7. Check it: open that address in a browser. It should say "Articles for
-   Instapaper converter".
-8. On the reader's web page, on the **Articles for Instapaper** card, find
+
+### Or deploy it from a computer
+
+1. Install [Node.js](https://nodejs.org) 24 or newer, and download or clone
+   this repository. Open a terminal in its folder.
+2. Run `npm install`, then `npx wrangler login` and sign in to Cloudflare.
+3. Run `npx wrangler deploy`. If it asks you to choose a `workers.dev`
+   subdomain, pick any name: it becomes part of the address. At the end it
+   prints the converter's address. (With the newer Cloudflare CLI, `cf auth
+   login` and `cf deploy` do the same.)
+
+### Connect the reader to it
+
+1. Check the converter: open its address in a browser. It should say
+   "Articles for Instapaper converter".
+2. On the reader's web page, on the **Articles for Instapaper** card, find
    **Converter (optional)**. Turn on **Use a Cloudflare Worker converter**,
    paste the address and tap **Save converter**. The card checks that the
    converter answers.
-9. Optional: to send reading progress and archive finished articles (see
+3. Optional: to send reading progress and archive finished articles (see
    [Progress and archiving](#progress-and-archiving)), also turn on **Send
    reading progress and archive finished articles** and tap **Save
    converter**. Then restart the reader once.
 
-To update the converter later, get the new version of the repository and run
-`npx cf deploy` again. To stop using it, turn the option off and tap **Save
+Cloudflare redeploys a converter deployed with the button whenever your copy
+of the repository changes, so to update it, pull this repository's changes
+into your copy and push. Otherwise run `npx wrangler deploy` again with the
+new version. To stop using it, turn the option off and tap **Save
 converter**; the address is kept for later. To remove it completely, delete
 the `instapaper-epub` Worker in the Cloudflare dashboard under
 **Workers & Pages**.

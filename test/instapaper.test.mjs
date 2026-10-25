@@ -10,6 +10,7 @@ import { COVER_TRANSFORM, fetchCover, fetchImages, imageInfo, readerCanShow } fr
 import { readerExit } from '../worker/events.js';
 import { folderLists } from '../worker/lists.js';
 import { buildFiles } from '../scripts/build.mjs';
+import { releaseNotes } from '../scripts/release-notes.mjs';
 
 const root = new URL('../instapaper.crosspoint-plugin/', import.meta.url);
 const parseHtml = (html) => new JSDOM(html).window.document;
@@ -161,6 +162,18 @@ test('buildEpub marks right-to-left articles', async () => {
   assert.match(files[2].text, /<dc:language>he<\/dc:language>/);
   assert.match(files[2].text, /page-progression-direction="rtl"/);
   assert.match(files[5].text, /<html [^>]*dir="rtl"/);
+});
+
+test('cleanAuthor drops a publication date stuck to the name', () => {
+  const { cleanAuthor } = epub;
+  assert.equal(cleanAuthor('James MarriottSep 19, 2025'), 'James Marriott');
+  assert.equal(cleanAuthor('Julie Beck, Natalie Brennan'), 'Julie Beck, Natalie Brennan');
+  assert.equal(cleanAuthor('Ann Lee · September 3, 2024'), 'Ann Lee');
+  assert.equal(cleanAuthor('Ann Lee 3 Sept. 2024'), 'Ann Lee');
+  assert.equal(cleanAuthor('Ann Lee, 2024-09-03'), 'Ann Lee');
+  assert.equal(cleanAuthor('Theresa May'), 'Theresa May');
+  assert.equal(cleanAuthor('Sep 19, 2025'), 'Sep 19, 2025', 'nothing left: keep it');
+  assert.equal(cleanAuthor(''), '');
 });
 
 test('withoutSiteSuffix drops a trailing site name only', () => {
@@ -993,7 +1006,7 @@ test('the installed files are the current minified build of src/', async () => {
   const built = await buildFiles();
   for (const [name, code] of Object.entries(built)) {
     const installed = await readFile(new URL(name, root), 'utf8');
-    assert.equal(installed, code, name + ' is stale: run npm run build');
+    assert.ok(installed === code, 'instapaper.crosspoint-plugin/' + name + ' is stale: run npm run build:plugin');
     assert.ok(code.length < 0.6 * (await readFile(new URL('../src/' + name, import.meta.url), 'utf8')).length, name + ' is minified');
   }
 });
@@ -1018,6 +1031,29 @@ test('the minified files work like the sources', async () => {
   assert.deepEqual(Array.from(result.added), ['One']);
   const files = readZip(device.sd.get('/Instapaper/One.epub'));
   assert.match(files.find((f) => f.name === 'OEBPS/article.xhtml').text, /<p>One <em>two<\/em><\/p>/);
+});
+
+test('wrangler.jsonc and cloudflare.config.ts describe the same Worker', async () => {
+  // The Deploy to Cloudflare button reads wrangler.jsonc; `cf deploy` reads
+  // cloudflare.config.ts.
+  const jsonc = await readFile(new URL('../wrangler.jsonc', import.meta.url), 'utf8');
+  const wrangler = JSON.parse(jsonc.replace(/^\s*\/\/.*$/gm, ''));
+  const ts = await readFile(new URL('../cloudflare.config.ts', import.meta.url), 'utf8');
+  const field = (name) => (new RegExp(name + ':\\s*"([^"]+)"').exec(ts) || [])[1];
+  assert.equal(wrangler.name, field('name'));
+  assert.equal(wrangler.main, field('entrypoint'));
+  assert.equal(wrangler.compatibility_date, field('compatibilityDate'));
+  assert.equal(wrangler.workers_dev, /workersDev:\s*true/.test(ts));
+  const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
+  assert.equal(pkg.scripts.deploy, 'wrangler deploy', 'Workers Builds runs the deploy script');
+  assert.equal(pkg.scripts.build, undefined, 'Workers Builds would run a build script too');
+});
+
+test('CHANGELOG.md has release notes for the current version', async () => {
+  const manifest = JSON.parse(await readFile(new URL('manifest.json', root), 'utf8'));
+  const notes = await releaseNotes(manifest.version);
+  assert.match(notes, /^- /m, 'the release workflow publishes these notes');
+  await assert.rejects(releaseNotes('0.0.0'), /no "## 0.0.0" section/);
 });
 
 test('manifest meets the Plugin Hub contract', async () => {

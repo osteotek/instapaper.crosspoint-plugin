@@ -20,7 +20,16 @@ them, and how they were tested. The user guide is the repository
 - `src/epub.js`: turns Instapaper's parsed HTML into an EPUB. One ES module
   shared by the web card (loaded with `import()`), the Worker and the tests.
   `instapaper.crosspoint-plugin/epub.js` is its minified build.
-- `scripts/build.mjs`: `npm run build` minifies `src/plugin.js` and
+- `instapaper.crosspoint-plugin/DETAILS.md`: the details page Plugin Hub
+  shows before installing (headings, `- ` lists and bold only).
+- `wrangler.jsonc` and `cloudflare.config.ts`: the same Worker for Wrangler
+  (and the Deploy to Cloudflare button) and for `cf`; a test checks they
+  agree. `npm run deploy` runs `wrangler deploy`, `npm run deploy:cf` runs
+  `cf deploy`.
+- `.github/workflows/`: `test.yml` runs `npm test` on every push and pull
+  request; `release.yml` publishes a GitHub Release when a `vX.Y.Z` tag is
+  pushed.
+- `scripts/build.mjs`: `npm run build:plugin` minifies `src/plugin.js` and
   `src/epub.js` with esbuild into the payload folder. The build is committed,
   because Plugin Hub installs the payload folder exactly as tagged.
 - `worker/`: the converter, a Cloudflare Worker. `index.js` handles the
@@ -275,12 +284,18 @@ To publish a version:
 
 1. Set the same `MAJOR.MINOR.PATCH` version in
    `instapaper.crosspoint-plugin/manifest.json`, `instapaper.crosspoint-plugin/device.json`
-   and `package.json` (`npm test` checks they agree), and list any new runtime
-   file in the manifest's `files`.
-2. Run `npm run build` (the minified files carry the version) and `npm test`.
-3. Commit, tag `vX.Y.Z`, push both, and publish a GitHub Release for the tag
-   (not a draft or prerelease).
+   and `package.json`, list any new runtime file in the manifest's `files`,
+   and add a `## X.Y.Z` section to `CHANGELOG.md`.
+2. Run `npm run build:plugin` (the minified files carry the version) and
+   `npm test`. The tests check the versions agree, the build is current and
+   the changelog has the version.
+3. Commit, tag `vX.Y.Z` and push both. The release workflow runs the tests,
+   checks the tag against the manifest, and publishes the GitHub Release with
+   the changelog section as its notes.
 4. Plugin Hub's catalog refresh, every three hours, picks it up.
+
+If the converter changed, also run `npm run deploy` (or `npm run deploy:cf`)
+to update your own Worker.
 
 The converter is deployed separately (`cf deploy`); each user runs their own.
 

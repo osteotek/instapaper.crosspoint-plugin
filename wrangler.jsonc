@@ -1,0 +1,10 @@
+// The converter Worker (worker/), for the Deploy to Cloudflare button and
+// `wrangler deploy`. cloudflare.config.ts is the same Worker for `cf deploy`;
+// `npm test` checks the two agree.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "instapaper-epub",
+  "main": "worker/index.js",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": true
+}
