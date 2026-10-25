@@ -7,7 +7,7 @@
 //
 // The reader's device.json catalog downloads articles through this Worker:
 // it fetches Instapaper's parsed text for the bookmark and its images, and
-// returns them as an EPUB built by instapaper/epub.js (the web card uses the
+// returns them as an EPUB built by instapaper.crosspoint-plugin/epub.js (the web card uses the
 // same module, without images). Images are converted for the reader by
 // images.js. It keeps no state and no secrets; every request runs with the
 // token the reader sends.
@@ -25,7 +25,7 @@ import {
   buildEpub,
   placeImages,
   readerFileName,
-} from '../instapaper/epub.js';
+} from '../instapaper.crosspoint-plugin/epub.js';
 import { readerExit } from './events.js';
 import { fetchCover, fetchImages } from './images.js';
 import { folderLists } from './lists.js';

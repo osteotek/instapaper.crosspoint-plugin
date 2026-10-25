@@ -33,7 +33,10 @@ a minute and needs no approval.
 ## Step 2: Install the plugin and connect
 
 1. On the reader, turn on **Settings > Connectivity > Plugins**.
-2. Copy the `instapaper` folder to `/plugins/` on the SD card.
+2. Install the plugin with Plugin Hub: on the reader, open **Home > Plugins >
+   Plugin Hub > Community Plugins**, select **Articles for Instapaper** and
+   install it. (Or copy the files of this folder to
+   `/.crosspoint/plugins/instapaper/` on the SD card.) Restart the reader.
 3. On the reader, start **File Transfer**. Open the web address it shows in a
    browser on the same network, and go to **Settings**.
 4. On the **Articles for Instapaper** card, paste the token and tap
@@ -57,8 +60,9 @@ The Worker runs on your own Cloudflare account. The free plan is enough.
    [dash.cloudflare.com/sign-up](https://dash.cloudflare.com/sign-up) and
    confirm your email address.
 2. On your computer, install [Node.js](https://nodejs.org) 24 or newer.
-3. Download or clone this plugin's source repository, and open a terminal in
-   its folder (the one with `cloudflare.config.ts`).
+3. Download or clone the plugin's repository,
+   [github.com/osteotek/instapaper.crosspoint-plugin](https://github.com/osteotek/instapaper.crosspoint-plugin), and open a
+   terminal in its folder (the one with `cloudflare.config.ts`).
 4. Install the tools:
 
    ```sh
@@ -184,6 +188,14 @@ or later (it finds them by their `.meta.json` file).
 An app on your network can also start a web sync: send a `sync` job for the
 `instapaper` plugin to `/api/plugin-jobs` while the reader's web page (or
 `/plugins-run`) is open.
+
+## Updating
+
+Plugin Hub shows **Update** when a new version is out. Your token and settings
+stay. An update replaces `device.json`, so afterwards open the reader's web
+**Settings** page once: the card puts your folders and, if it is on, the
+progress-and-archiving handler back. If progress and archiving is on, restart
+the reader after that.
 
 ## Limits
 

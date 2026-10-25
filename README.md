@@ -4,19 +4,21 @@ An SD-card plugin for [CrossPoint Reader](https://github.com/crosspoint-reader/c
 that downloads saved [Instapaper](https://www.instapaper.com) articles as EPUB.
 User instructions, including how to create the Instapaper access token and
 deploy the converter to Cloudflare, are in
-[instapaper/README.md](instapaper/README.md).
+[instapaper.crosspoint-plugin/README.md](instapaper.crosspoint-plugin/README.md).
 
 This project is not made or endorsed by Instapaper.
 
+Install it on the reader from **Plugin Hub > Community Plugins**.
+
 ## Layout
 
-- `instapaper/manifest.json`: title, version, and web Settings mount.
-- `instapaper/plugin.js`: the Settings card (token, optional converter) and
+- `instapaper.crosspoint-plugin/manifest.json`: title, version, and web Settings mount.
+- `instapaper.crosspoint-plugin/plugin.js`: the Settings card (token, optional converter) and
   the web sync.
-- `instapaper/device.json`: the on-reader catalog. It lists Instapaper
+- `instapaper.crosspoint-plugin/device.json`: the on-reader catalog. It lists Instapaper
   directly and downloads each article through the converter Worker. The card
   rewrites parts of it to match the converter settings (see below).
-- `instapaper/epub.js`: turns Instapaper's parsed HTML into an EPUB. One ES
+- `instapaper.crosspoint-plugin/epub.js`: turns Instapaper's parsed HTML into an EPUB. One ES
   module shared by the web card (loaded with `import()`), the Worker and the
   tests.
 - `worker/`: the converter, a Cloudflare Worker. `index.js` handles the
@@ -252,6 +254,24 @@ loop releases request arguments after `handleClient()`
 arguments in the simulator. The test harness retried only those errors and
 counted them. This does not happen on the device, where handlers run inside
 `handleClient()`.
+
+## Releasing
+
+Plugin Hub finds this repository by its `crosspoint-plugin` topic and installs
+the `instapaper.crosspoint-plugin/` folder from the latest GitHub Release
+(see the Plugin Hub contract in
+[crosspoint-plugin-hub](https://github.com/crosspoint-reader/crosspoint-plugin-hub)).
+To publish a version:
+
+1. Set the same `MAJOR.MINOR.PATCH` version in
+   `instapaper.crosspoint-plugin/manifest.json`, `instapaper.crosspoint-plugin/device.json`
+   and `package.json` (`npm test` checks they agree), and list any new runtime
+   file in the manifest's `files`.
+2. Commit, tag `vX.Y.Z`, push both, and publish a GitHub Release for the tag
+   (not a draft or prerelease).
+3. Plugin Hub's catalog refresh, every three hours, picks it up.
+
+The converter is deployed separately (`cf deploy`); each user runs their own.
 
 ## License
 

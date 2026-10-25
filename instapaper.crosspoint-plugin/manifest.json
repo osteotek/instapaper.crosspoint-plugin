@@ -1,0 +1,13 @@
+{
+  "name": "instapaper",
+  "title": "Articles for Instapaper",
+  "description": "Download your saved Instapaper articles as EPUB.",
+  "author": "Arthur Tazhitdinov",
+  "version": "1.0.0",
+  "mount": "settings",
+  "compatibility": {
+    "firmware_family": ["crosspoint"],
+    "plugin_api_min": 1
+  },
+  "files": ["manifest.json", "device.json", "plugin.js", "epub.js", "README.md"]
+}

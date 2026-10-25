@@ -4,13 +4,13 @@ import test from 'node:test';
 import vm from 'node:vm';
 import { inflateRawSync, crc32 } from 'node:zlib';
 import { JSDOM } from 'jsdom';
-import * as epub from '../instapaper/epub.js';
+import * as epub from '../instapaper.crosspoint-plugin/epub.js';
 import worker from '../worker/index.js';
 import { COVER_TRANSFORM, fetchCover, fetchImages, imageInfo, readerCanShow } from '../worker/images.js';
 import { readerExit } from '../worker/events.js';
 import { folderLists } from '../worker/lists.js';
 
-const root = new URL('../instapaper/', import.meta.url);
+const root = new URL('../instapaper.crosspoint-plugin/', import.meta.url);
 const parseHtml = (html) => new JSDOM(html).window.document;
 
 async function loadPlugin() {
@@ -985,8 +985,25 @@ test('device.json lists Instapaper on the reader and downloads through the worke
   assert.deepEqual(manifest.download.sidecar, { path: '{dest}.meta.json', body: '{"instapaper_id":"{id}"}' });
 });
 
-test('manifest and package agree', async () => {
+test('manifest meets the Plugin Hub contract', async () => {
+  // PLUGIN_HUB_CONTRACT.md: one <id>.crosspoint-plugin/ payload whose stem is
+  // manifest.name, a MAJOR.MINOR.PATCH version matching the release tag, and
+  // every declared runtime file present.
+  const { readdir } = await import('node:fs/promises');
+  const repo = new URL('../', import.meta.url);
+  const payloads = (await readdir(repo)).filter((n) => n.endsWith('.crosspoint-plugin'));
+  assert.deepEqual(payloads, ['instapaper.crosspoint-plugin']);
   const manifest = JSON.parse(await readFile(new URL('manifest.json', root), 'utf8'));
-  assert.deepEqual(Object.keys(manifest).sort(), ['description', 'mount', 'title', 'version']);
+  assert.equal(manifest.name, 'instapaper');
+  assert.match(manifest.name, /^[a-z0-9-]+$/);
+  assert.match(manifest.version, /^\d+\.\d+\.\d+$/);
   assert.equal(manifest.mount, 'settings');
+  const present = await readdir(root);
+  for (const file of manifest.files) assert.ok(present.includes(file), file + ' is declared and present');
+  for (const file of ['epub.js', 'device.json', 'plugin.js']) assert.ok(manifest.files.includes(file), file + ' is installed');
+  const device = JSON.parse(await readFile(new URL('device.json', root), 'utf8'));
+  const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
+  assert.equal(device.version, manifest.version);
+  assert.equal(pkg.version, manifest.version);
+  assert.equal(device.title, manifest.title);
 });

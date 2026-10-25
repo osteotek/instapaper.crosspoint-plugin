@@ -600,7 +600,9 @@
       [
         'Create a free Cloudflare account at ' + link('https://dash.cloudflare.com/sign-up', 'dash.cloudflare.com/sign-up') + '.',
         'On a computer, install ' + link('https://nodejs.org', 'Node.js') + ' 24 or newer.',
-        'Download this plugin\'s source repository and open a terminal in its folder (the one with ' +
+        'Download the plugin\'s repository, ' +
+          link('https://github.com/osteotek/instapaper.crosspoint-plugin', 'github.com/osteotek/instapaper.crosspoint-plugin') +
+          ', and open a terminal in its folder (the one with ' +
           code('cloudflare.config.ts') +
           ').',
         'Run ' + code('npm install') + ', then ' + code('npx cf auth login') + ' and sign in to Cloudflare.',
