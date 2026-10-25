@@ -141,8 +141,11 @@ also removes archived articles from the SD card.
 
 1. On the card, pick a folder (Home, Archive, Liked, or one of your own
    folders) and how many of its newest articles to download.
-2. Tap **Sync now**. Articles are saved in `/Instapaper/`. Articles that are
-   already on the card are not downloaded again.
+2. Tap **Sync now**. A progress bar under the button shows which article is
+   downloading. Keep the page open until it says how many were added; any
+   skipped articles are listed with the reason. Articles are saved in
+   `/Instapaper/`. Articles that are already on the card are not downloaded
+   again; skipped ones are tried again on the next sync.
 
 **Delete articles that left the folder:** when this is on, a sync deletes
 articles that the web sync downloaded from the chosen folder and that are no

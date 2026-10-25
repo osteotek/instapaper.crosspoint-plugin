@@ -287,7 +287,7 @@ test('syncArticles downloads new articles, skips what has no text and removes go
   assert.ok(device.sd.has('/Instapaper/First story (4).epub'));
   assert.ok(device.deleted.includes('/plugins/instapaper/download.json'));
   assert.ok(!device.sd.has('/plugins/instapaper/download.json'));
-  assert.match(summary(result), /^Added 2 articles\. Skipped "A PDF": it is a PDF\./);
+  assert.equal(summary(result), 'Added 2 articles. Skipped 3:');
 
   // Second run: 1 left the folder. 4 came from another section, so it stays.
   const state = await device.io.readJson('/plugins/instapaper/state.json');
@@ -313,6 +313,34 @@ test('syncArticles downloads new articles, skips what has no text and removes go
   ]);
   const after = await device.io.readJson('/plugins/instapaper/state.json');
   assert.deepEqual(Array.from(Object.keys(after.articles)).sort(), ['4', '6']);
+});
+
+test('syncArticles reports progress article by article', async () => {
+  const { syncArticles } = await loadPlugin();
+  const device = fakeDevice({
+    bookmarks: [bookmark(1, 'One'), bookmark(2, 'A PDF', { category: 3 }), bookmark(3, 'Gone')],
+    parses: { 1: parsed('<p>One</p>') },
+  });
+  const calls = [];
+  await syncArticles(Object.assign({ section: 'home', limit: 5 }, connected), device.api, device.io, (text, done, total) =>
+    calls.push([text, done, total]),
+  );
+  assert.deepEqual(calls, [
+    ['Listing articles...', 0, 0],
+    ['Downloading 1 of 3: One', 0, 3],
+    ['Saved 1 of 3 (1 added, 0 skipped): One', 1, 3],
+    ['Skipped 2 of 3 (1 added, 1 skipped): A PDF', 2, 3],
+    ['Downloading 3 of 3 (1 added, 1 skipped): Gone', 2, 3],
+    ['Skipped 3 of 3 (1 added, 2 skipped): Gone', 3, 3],
+  ]);
+  // Nothing new: the bar fills at once. (Skipped articles are retried, so use
+  // a list where everything was saved.)
+  const done = fakeDevice({ bookmarks: [bookmark(1, 'One')], parses: { 1: parsed('<p>One</p>') } });
+  const cfg = Object.assign({ section: 'home', limit: 5 }, connected);
+  await syncArticles(cfg, done.api, done.io, () => {});
+  const none = [];
+  await syncArticles(cfg, done.api, done.io, (...args) => none.push(args));
+  assert.deepEqual(none, [['Listing articles...', 0, 0], ['No new articles.', 1, 1]]);
 });
 
 test('syncArticles skips articles already on the card and keeps files when removal is off', async () => {
@@ -363,7 +391,11 @@ test('syncArticles downloads EPUBs from the converter when it is on', async () =
   assert.equal(new TextDecoder().decode(device.sd.get('/Instapaper/With pictures.epub')), 'EPUB-BYTES');
   assert.ok(device.calls.includes('/bookmarks/1.epub?lang=de&url=https://news.example.org/a?x=1&y=2'), 'url last and raw');
   assert.ok(!device.calls.some((c) => c.endsWith('/parse')), 'the page does not parse when the converter is on');
-  assert.match(summary(result), /Skipped "No text": Instapaper has no text for it\. Skipped "Broken": the converter answered HTTP 502: Conversion failed: boom\. Skipped "A PDF"/);
+  assert.equal(summary(result), 'Added 1 articles. Skipped 3:');
+  assert.deepEqual(
+    Array.from(result.skipped, (s) => s.title + ': ' + s.reason),
+    ['No text: Instapaper has no text for it', 'Broken: the converter answered HTTP 502: Conversion failed: boom', 'A PDF: it is a PDF'],
+  );
 
   const rejected = fakeDevice({ bookmarks: [bookmark(1, 'A'), bookmark(2, 'B')], worker: { 1: [401, 'Instapaper answered HTTP 401.'] } });
   await assert.rejects(syncArticles(cfg, rejected.api, rejected.io, () => {}), /did not accept the access token/);

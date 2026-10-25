@@ -219,6 +219,8 @@
     }
   }
 
+  // `report(text, done, total)` follows the sync: `done` of `total` articles
+  // handled so far; total is 0 while the list is loading.
   // `io` supplies the browser parts, so tests can run this in Node:
   //   epub (the epub.js module), readJson(path) -> object or null,
   //   deleteFile(path), parseHtml(html) -> Document, language, now() -> ms.
@@ -236,20 +238,26 @@
     const result = { added: [], skipped: [], removed: 0 };
 
     try {
-      report('Listing articles...');
+      report('Listing articles...', 0, 0);
       const listing = await fetchJson(api, cfg, io, '/bookmarks?' + sectionQuery(section) + '&limit=' + clampLimit(cfg.limit), tmpPath);
       const bookmarks = listing.bookmarks || [];
       const fresh = bookmarks.filter((b) => !articles[b.id]);
       const usedNames = new Set(Object.values(articles).map((a) => a.file.toLowerCase()));
 
+      const counts = () =>
+        result.added.length || result.skipped.length
+          ? ' (' + result.added.length + ' added, ' + result.skipped.length + ' skipped)'
+          : '';
+      if (!fresh.length) report('No new articles.', 1, 1);
       for (let i = 0; i < fresh.length; i++) {
         const bookmark = fresh[i];
         const title = normalizeSpace(bookmark.title) || 'Article ' + bookmark.id;
         if (NO_TEXT_CATEGORIES[bookmark.category]) {
           result.skipped.push({ title, reason: 'it is ' + NO_TEXT_CATEGORIES[bookmark.category] });
+          report('Skipped ' + (i + 1) + ' of ' + fresh.length + counts() + ': ' + title, i + 1, fresh.length);
           continue;
         }
-        report('Downloading ' + (i + 1) + ' of ' + fresh.length + ': ' + title);
+        report('Downloading ' + (i + 1) + ' of ' + fresh.length + counts() + ': ' + title, i, fresh.length);
         let file = DEST_DIR + '/' + fileBaseName(bookmark.title, bookmark.id) + '.epub';
         if (usedNames.has(file.toLowerCase())) {
           file = DEST_DIR + '/' + fileBaseName(bookmark.title, bookmark.id) + ' (' + bookmark.id + ').epub';
@@ -266,6 +274,7 @@
         }
         if (skipReason) {
           result.skipped.push({ title, reason: skipReason });
+          report('Skipped ' + (i + 1) + ' of ' + fresh.length + counts() + ': ' + title, i + 1, fresh.length);
           continue;
         }
         await api.writeFile(...sidecarFor(file, bookmark.id));
@@ -273,11 +282,13 @@
         articles[bookmark.id] = { file, section };
         await saveState();
         result.added.push(title);
+        report('Saved ' + (i + 1) + ' of ' + fresh.length + counts() + ': ' + title, i + 1, fresh.length);
       }
 
       // Articles fetched from this section that are no longer among its
       // newest `limit`: archived, moved or deleted in Instapaper.
       if (cfg.remove_gone) {
+        report('Removing articles that left the folder...', fresh.length || 1, fresh.length || 1);
         const listed = new Set(bookmarks.map((b) => String(b.id)));
         for (const id of Object.keys(articles)) {
           if (articles[id].section !== section || listed.has(id)) continue;
@@ -294,10 +305,11 @@
     return result;
   }
 
+  // The headline of a sync result; the card lists skipped articles below it.
   function summary(result) {
     const parts = [result.added.length ? 'Added ' + result.added.length + ' articles.' : 'No new articles.'];
     if (result.removed) parts.push('Removed ' + result.removed + '.');
-    for (const s of result.skipped) parts.push('Skipped "' + s.title + '": ' + s.reason + '.');
+    if (result.skipped.length) parts.push('Skipped ' + result.skipped.length + ':');
     return parts.join(' ');
   }
 
@@ -388,6 +400,8 @@
       '<button type="button" class="btn-small btn-add" id="ip-sync-btn">Sync now</button> ' +
       '<button type="button" class="btn-small" id="ip-signout">Disconnect</button>' +
       '</div>' +
+      '<progress id="ip-progress" style="width:100%;display:none"></progress>' +
+      '<div id="ip-sync-result"></div>' +
       '<p style="color:#666" id="ip-sync-note"></p>' +
       '<h3>Converter (optional)</h3>' +
       '<div class="setting-row"><span class="setting-name">Use a Cloudflare Worker converter</span>' +
@@ -397,6 +411,7 @@
       '<div class="setting-row"><span class="setting-name">Send reading progress and archive finished articles</span>' +
       '<span class="setting-control"><input type="checkbox" id="ip-archive"></span></div>' +
       '<div class="setting-row"><button type="button" class="btn-small" id="ip-worker-btn">Save converter</button></div>' +
+      '<p id="ip-worker-result"></p>' +
       '<p style="color:#666">The converter is a small Cloudflare Worker that runs on your own free Cloudflare account. ' +
       'With it, articles include their images, there is no size limit, and you can also download articles on the ' +
       'reader itself (Home &gt; Plugins). Your token is sent to it with each download. Without it, Sync saves text ' +
@@ -406,16 +421,47 @@
       'article on that page and it moves to your Instapaper Archive. This happens the next time the reader ' +
       'connects to Wi-Fi. It works for articles downloaded after you turn it on.</p>' +
       converterHelp +
-      '</div>' +
-      '<p id="ip-result"></p>';
+      '</div>';
 
     const el = (id) => document.getElementById(id);
     const status = (text) => {
       el('ip-status').textContent = text;
     };
-    const showResult = (text) => {
-      el('ip-result').textContent = text;
+    const showConverterResult = (text) => {
+      el('ip-worker-result').textContent = text;
     };
+
+    // Sync status under the Sync button: a progress bar while it runs, then
+    // the summary with one line per skipped article.
+    function showSyncProgress(text, done, total) {
+      const bar = el('ip-progress');
+      bar.style.display = '';
+      if (total > 0) {
+        bar.max = total;
+        bar.value = done;
+      } else {
+        bar.removeAttribute('value'); // indeterminate while the list loads
+      }
+      el('ip-sync-result').textContent = text;
+    }
+
+    function showSyncResult(text, skipped) {
+      el('ip-progress').style.display = 'none';
+      const box = el('ip-sync-result');
+      box.textContent = '';
+      const line = document.createElement('p');
+      line.textContent = text;
+      box.appendChild(line);
+      if (skipped && skipped.length) {
+        const list = document.createElement('ul');
+        for (const s of skipped) {
+          const item = document.createElement('li');
+          item.textContent = s.title + ': ' + s.reason;
+          list.appendChild(item);
+        }
+        box.appendChild(list);
+      }
+    }
 
     async function readJson(path) {
       try {
@@ -483,7 +529,8 @@
       select.value = sections.some((s) => s.id === selected) ? selected : 'home';
     }
 
-    async function showConnected(cfg) {
+    // Your own folders load in the background, so the buttons work at once.
+    function showConnected(cfg) {
       el('ip-signin').style.display = 'none';
       el('ip-sync').style.display = '';
       el('ip-limit').value = clampLimit(cfg.limit);
@@ -491,11 +538,10 @@
       showConverter(cfg);
       showSections(SECTIONS, cfg.section);
       status('Connected as ' + cfg.username + '.');
-      try {
-        showSections(await listSections(api, cfg), cfg.section);
-      } catch (e) {
-        status('Connected as ' + cfg.username + '. Could not load your folders: ' + e.message + '.');
-      }
+      listSections(api, cfg).then(
+        (sections) => showSections(sections, el('ip-section').value || cfg.section),
+        (e) => status('Connected as ' + cfg.username + '. Could not load your folders: ' + e.message + '.'),
+      );
     }
 
     function showDisconnected() {
@@ -505,7 +551,7 @@
     }
 
     let saved = (await readJson(CONFIG_PATH)) || {};
-    if (saved.token) await showConnected(saved);
+    if (saved.token) showConnected(saved);
     else showDisconnected();
 
     el('ip-signin-btn').onclick = async () => {
@@ -532,7 +578,7 @@
         await writeConfig(cfg);
         saved = cfg;
         el('ip-token').value = '';
-        await showConnected(cfg);
+        showConnected(cfg);
       } catch (e) {
         status('Could not connect: ' + e.message + '.');
       }
@@ -543,7 +589,7 @@
         // Keep the converter settings; drop the token and account.
         saved = converterSettings(saved);
         await writeConfig(saved);
-        showResult('');
+        showSyncResult('');
         showDisconnected();
       } catch (e) {
         status('Error: ' + e.message);
@@ -553,10 +599,12 @@
     el('ip-sync-btn').onclick = async () => {
       const button = el('ip-sync-btn');
       if (!saved.token) {
-        showResult('Connect first.');
+        showSyncResult('Connect first.');
         return;
       }
       button.disabled = true;
+      el('ip-signout').disabled = true;
+      button.textContent = 'Syncing...';
       try {
         const cfg = Object.assign({}, saved, {
           section: el('ip-section').value || 'home',
@@ -565,11 +613,14 @@
         });
         await writeConfig(cfg);
         saved = cfg;
-        showResult(summary(await syncArticles(cfg, api, io, showResult)));
+        const result = await syncArticles(cfg, api, io, showSyncProgress);
+        showSyncResult(summary(result), result.skipped);
       } catch (e) {
-        showResult('Error: ' + e.message + '.');
+        showSyncResult('Error: ' + e.message + '.');
       } finally {
         button.disabled = false;
+        el('ip-signout').disabled = false;
+        button.textContent = 'Sync now';
       }
     };
 
@@ -578,12 +629,12 @@
       const typed = el('ip-worker').value.trim();
       const address = normalizeWorkerUrl(typed);
       if ((use || typed) && !address) {
-        showResult('Enter the converter address as https://name.account.workers.dev.');
+        showConverterResult('Enter the converter address as https://name.account.workers.dev.');
         return;
       }
       try {
         if (use) {
-          showResult('Checking the converter...');
+          showConverterResult('Checking the converter...');
           let r;
           try {
             r = await api.relay('GET', address + '/', {}, '');
@@ -591,7 +642,7 @@
             r = { status: 0, body: '' };
           }
           if (r.status !== 200 || r.body.indexOf(WORKER_BANNER) < 0) {
-            showResult('No converter answered at ' + address + (r.status ? ' (HTTP ' + r.status + ').' : '.'));
+            showConverterResult('No converter answered at ' + address + (r.status ? ' (HTTP ' + r.status + ').' : '.'));
             return;
           }
         }
@@ -615,9 +666,9 @@
         if (await setExitEvents(use && archive)) {
           messages.push('Restart the reader once so it picks up the change to progress and archiving.');
         }
-        showResult(messages.join(' '));
+        showConverterResult(messages.join(' '));
       } catch (e) {
-        showResult('Error: ' + e.message + '.');
+        showConverterResult('Error: ' + e.message + '.');
       }
     };
 
