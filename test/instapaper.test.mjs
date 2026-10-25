@@ -262,7 +262,7 @@ function fakeDevice({ bookmarks = [], parses = {}, folders = [], worker = {}, ch
       deleted.push(path);
       sd.delete(path);
     },
-    epub,
+    loadEpub: async () => epub,
     parseHtml,
     language: 'en',
     now: () => Date.UTC(2026, 9, 25),

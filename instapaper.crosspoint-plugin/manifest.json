@@ -3,7 +3,7 @@
   "title": "Articles for Instapaper",
   "description": "Download your saved Instapaper articles as EPUB.",
   "author": "Arthur Tazhitdinov",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "mount": "settings",
   "compatibility": {
     "firmware_family": ["crosspoint"],

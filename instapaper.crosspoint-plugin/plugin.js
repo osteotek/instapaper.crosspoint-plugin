@@ -210,7 +210,7 @@
 
   // Builds a text-only EPUB in the page from Instapaper's parsed text.
   async function saveInPage(api, cfg, io, bookmark, file, tmpPath) {
-    const { articleContent, articleDocumentHtml, articleFromParse, buildEpub } = io.epub;
+    const { articleContent, articleDocumentHtml, articleFromParse, buildEpub } = await io.loadEpub();
     let parsed;
     try {
       parsed = await fetchJson(api, cfg, io, '/bookmarks/' + bookmark.id + '/parse', tmpPath);
@@ -314,13 +314,13 @@
   // `report(text, done, total)` follows the sync: `done` of `total` articles
   // handled so far; total is 0 while the list is loading.
   // `io` supplies the browser parts, so tests can run this in Node:
-  //   epub (the epub.js module), readJson(path) -> object or null,
+  //   loadEpub() -> the epub.js module, readJson(path) -> object or null,
   //   readBytes(path) -> Uint8Array or null, listDir(path) -> file names,
   //   deleteFile(path), parseHtml(html) -> Document, language, now() -> ms.
   // The state is saved after each article, so an interrupted sync keeps what
   // it finished.
   async function syncArticles(cfg, api, io, report) {
-    const { readerFileName, normalizeSpace } = io.epub;
+    const { readerFileName, normalizeSpace } = await io.loadEpub();
     const section = cfg.section || 'home';
     const tmpPath = api.dir + '/download.json';
     const state = await loadState(api, io);
@@ -614,7 +614,9 @@
         'Turn on the option above, paste the address and tap <b>Save converter</b>.',
       ],
       'Anyone who knows the address can use the converter with their own Instapaper token, which counts against ' +
-        'your Cloudflare free plan, so keep it to yourself. The plugin\'s README has more detail.',
+        'your Cloudflare free plan, so keep it to yourself. ' +
+        link('https://github.com/osteotek/instapaper.crosspoint-plugin', 'The full guide') +
+        ' has more detail.',
     );
 
     container.innerHTML =
@@ -740,8 +742,16 @@
       }
     }
 
+    let epubModule = null;
     const io = {
-      epub: await import(api.pluginFile('epub.js')),
+      // Loaded on the first sync, not with the page: highlights, the
+      // converter settings and the rest of the card do not need it.
+      loadEpub: () =>
+        epubModule ||
+        (epubModule = import(api.pluginFile('epub.js')).catch((e) => {
+          epubModule = null; // let the next sync try again
+          throw e;
+        })),
       readJson,
       readBytes,
       listDir,

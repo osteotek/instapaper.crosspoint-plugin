@@ -16,7 +16,7 @@
   "dependencies": {
     "linkedom": "^0.18.14"
   },
-  "version": "1.0.0",
+  "version": "1.0.1",
   "repository": {
     "type": "git",
     "url": "https://github.com/osteotek/instapaper.crosspoint-plugin.git"

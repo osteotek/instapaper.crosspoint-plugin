@@ -1,277 +1,243 @@
-# Articles for Instapaper (CrossPoint plugin)
+# Articles for Instapaper
 
-An SD-card plugin for [CrossPoint Reader](https://github.com/crosspoint-reader/crosspoint-reader)
-that downloads saved [Instapaper](https://www.instapaper.com) articles as EPUB.
-User instructions, including how to create the Instapaper access token and
-deploy the converter to Cloudflare, are in
-[instapaper.crosspoint-plugin/README.md](instapaper.crosspoint-plugin/README.md).
+A plugin for [CrossPoint Reader](https://github.com/crosspoint-reader/crosspoint-reader).
+It is not made or endorsed by Instapaper.
 
-This project is not made or endorsed by Instapaper.
+Downloads your saved Instapaper articles to the reader as EPUB books. You
+sync them from the reader's web page. With the optional converter, articles
+include their images, you can also download them on the reader itself, and
+the reader can send your reading progress to Instapaper and archive the
+articles you finish.
 
-Install it on the reader from **Plugin Hub > Community Plugins**.
+## What you need
 
-## Layout
+- An Instapaper account.
+- For the optional converter: a free Cloudflare account, and a computer with
+  [Node.js](https://nodejs.org) 24 or newer to deploy it once.
 
-- `instapaper.crosspoint-plugin/manifest.json`: title, version, and web Settings mount.
-- `instapaper.crosspoint-plugin/plugin.js`: the Settings card (token, optional converter) and
-  the web sync.
-- `instapaper.crosspoint-plugin/device.json`: the on-reader catalog. It lists Instapaper
-  directly and downloads each article through the converter Worker. The card
-  rewrites parts of it to match the converter settings (see below).
-- `instapaper.crosspoint-plugin/epub.js`: turns Instapaper's parsed HTML into an EPUB. One ES
-  module shared by the web card (loaded with `import()`), the Worker and the
-  tests.
-- `worker/`: the converter, a Cloudflare Worker. `index.js` handles the
-  request; `images.js` fetches and converts images. `cloudflare.config.ts`
-  configures it: `cf dev` runs it locally and `cf deploy` publishes it.
-- `test/`: Node tests. Run `npm install`, then `npm test` (Node 22 or newer).
+## Step 1: Get an Instapaper access token
 
-## Instapaper API
+The plugin uses Instapaper's API with your own access token. Instapaper gives
+one to the owner of an "application", which you create for yourself. It takes
+a minute and needs no approval.
 
-API v2 (`https://www.instapaper.com/api/2`), with a personal access token sent
-as `Authorization: Bearer`. Each user registers their own application. The
-article text endpoint is free only for personal use, where the application's
-owner reads their own account, and the API terms do not allow sharing keys.
+1. Sign in on [instapaper.com](https://www.instapaper.com).
+2. Open the [Applications](https://www.instapaper.com/developers/applications)
+   page and create a new application. Any name works, for example
+   "CrossPoint". You do not need callback URIs. A new application is in
+   **Owner Only** mode: it works only with your own account, which is all the
+   plugin needs. Do not submit it for review.
+3. Instapaper shows a client ID and a client secret. The plugin does not need
+   them.
+4. Open the application and select **Generate access token**. Copy the token
+   right away: Instapaper shows it only once. If you lose it, generate a new
+   one; the old one stops working.
 
-| Use | Endpoint | Caller |
-| --- | --- | --- |
-| Check the token | `GET /me` | web card, through the relay |
-| Folder list | `GET /folders` | web card, through the relay |
-| Bookmark list | `GET /bookmarks?section=…` or `?folder_id=…`, `limit` | web card through `/api/fetch`; reader catalog |
-| Article text | `GET /bookmarks/{id}/parse` | web card through `/api/fetch`; Worker |
+## Step 2: Install the plugin and connect
 
-## On the reader
+1. On the reader, turn on **Settings > Connectivity > Plugins**.
+2. Install the plugin with Plugin Hub: on the reader, open **Home > Plugins >
+   Plugin Hub > Community Plugins**, select **Articles for Instapaper** and
+   install it. (Or copy the files of the `instapaper.crosspoint-plugin`
+   folder to `/.crosspoint/plugins/instapaper/` on the SD card.) Restart the
+   reader.
+3. On the reader, start **File Transfer**. Open the web address it shows in a
+   browser on the same network, and go to **Settings**.
+4. On the **Articles for Instapaper** card, paste the token and tap
+   **Connect**. The card shows "Connected as" with your Instapaper username.
 
-Instapaper only returns article text as JSON, and `device.json` can only save
-a response as a file. The Worker closes that gap:
-`GET /bookmarks/{id}.epub?lang=…&url=…` with the reader's
-`Authorization: Bearer` token calls `/parse` with the same token and returns
-the EPUB. It keeps no state and holds no secrets. `GET /` answers with a
-banner, which the web card checks before saving the address.
+You can now sync text-only articles from this page (see
+[Use on the web page](#use-on-the-web-page)).
 
-- **Shared config.** The web card writes `config.json` with `token`, `lang`
-  and the converter settings: `use_worker` (the switch), `worker_address`
-  (kept while the switch is off) and `worker_url` (the address in use, empty
-  when off). `device.json` reads the token from it (`token.path`) and the
-  rest as `{cfg.*}`.
-- **Web sync.** With `worker_url` set, the page has the reader download each
-  EPUB from the Worker with `/api/fetch`, straight to the SD card, so images
-  come along and the 256 KB `/api/plugin-fs` limit does not apply; on a
-  failure it repeats the request through the relay to read the Worker's
-  short error answer. Without it, the page fetches `/parse` and builds a
-  text-only EPUB with `epub.js`.
-- **Lists.** The browse URLs have no `{page}`, so the reader fetches the
-  newest 100 once and pages them locally (`plugincatalogpaging::isStaticFeed`).
-  Instapaper pages by `offset`, which the templates cannot express.
-- **Folders.** `browse.lists_url` points at the Worker's `GET /lists`, which
-  fetches `/folders` and answers in the reader's list-index shape
-  (`{"lists": [{title, url}]}`): Home, Archive, Liked, then one
-  `/bookmarks?folder_id=…&limit=100` list per folder. The reader fetches
-  `lists_url` without headers and expects that exact shape
-  (`PluginCatalogActivity::loadBrowseListIndex`), which Instapaper's own
-  `/folders` cannot meet, so the token goes in the query string
-  (`lists_url: "{cfg.worker_url}/lists?token={token}"`). The reader logs the
-  URL, token included, when that request fails.
-- **List source follows the converter.** The reader loads `lists_url` only
-  when `browse.lists` is empty, so a manifest has one or the other. The
-  shipped `device.json` has fixed Home, Archive and Liked lists that go
-  straight to Instapaper, so listing works without the converter (Fetch then
-  fails: there is nothing to build the EPUB). With the converter on, the card
-  replaces them with `lists_url`. `manifestFor()` derives the whole
-  manifest state (lists and the `reader.exit` handler) from the settings; the
-  card applies it on Save converter and whenever it loads, which also repairs
-  a `device.json` overwritten by copying a new plugin version. Lists need no
-  restart; the event handler does.
-- **`url` comes last.** The reader puts `{url}` into the download URL without
-  encoding it, so the Worker takes everything after `url=` as the article
-  address. It is used only for the byline and `dc:source`.
-- **Errors.** The Worker passes Instapaper's 401, 403 and 429 through, and
-  answers 422 when Instapaper has no text for the bookmark.
-- **Progress and archiving.** Every download writes the sidecar
-  `<book>.meta.json` with `instapaper_id` (`download.sidecar` on the reader,
-  `/api/plugin-fs` in the web sync). While the option is on, the card adds a
-  `reader.exit` handler to `device.json` that posts `{instapaper_id, percent,
-  ts}` to the Worker's `POST /events/exit` (`worker/events.js`). The Worker
-  sends `percent` as Instapaper progress and archives at 100%. The firmware
-  fires `reader.exit` for every book and keeps an undelivered event queued,
-  blocking later ones, so the Worker answers 200 to anything it can never
-  act on (another book, a missing ID, a deleted bookmark) and only lets
-  token, rate-limit and server errors retry. The handler is removed when the
-  option is off, because without the converter every event would fail. The
-  handler has no `connect`, so events wait for the next Wi-Fi connection
-  instead of joining Wi-Fi at every sleep. Event subscriptions are read at
-  boot, hence the restart.
-- **End page.** The reader reports progress for the top of the current page
-  (`EpubReaderActivity::getScreenshotInfo`), so the last page of an N-page
-  article reports (N-1)/N, and no threshold works for short articles. Every
-  EPUB therefore ends with a tiny `end.xhtml` page, and the article file is
-  padded with a comment to 200 times its size: progress is weighted by
-  uncompressed file size (`Epub::calculateProgress`), so the end page starts
-  at 99.5% or more, which rounds to 100%. The padding compresses to almost
-  nothing.
-- **Images.** The parsed HTML keeps only `<img src>`. `articleContent()`
-  leaves a marker for each image and lists its URL; the Worker fetches the
-  images and `placeImages()` turns markers into `<img>` or drops them. Each
-  image is fetched with `cf.image` as a grayscale baseline JPEG within
-  800 x 800: the longest side of any supported panel, and the reader decodes
-  progressive JPEG only at 1/8 detail (`JpegToFramebufferConverter.cpp`). If
-  no transformation happens (local dev, monthly quota used), the original is
-  kept only when the reader can decode it (JPEG, PNG up to 4,096 px wide,
-  non-interlaced GIF up to 3,072 px) and it is under 1 MB. At most 30 images
-  and 3 MB of originals per article, within the free plan's 50 subrequests.
-  Images are stored in the ZIP without compression. Image fetching stops
-  after 15 seconds and the cover after 8 more, so a slow image host cannot
-  hold up the article. The `X-Images` response header reports how many were
-  found, kept and converted, and the cover.
-- **Cover.** The reader renders an EPUB's cover at its portrait screen size
-  (`JpegToBmpConverter::jpegFileToBmpStream`) for the cover screen and Home
-  thumbnails, and takes JPEGs up to 2048 x 3072, progressive ones at 1/8
-  detail. The Worker fetches the lead image (`metadata.thumbnail`, else the
-  first kept image) once more as a 528 x 800 grayscale baseline JPEG with
-  `fit: "cover"` and `gravity: "auto"`, which holds the largest portrait
-  screen (X3: 528 x 792); the reader scales it down for smaller ones. If
-  Cloudflare does not convert it, the original is used only when it is a
-  baseline JPEG within those limits and under 1 MB. The cover is a separate
-  `images/cover.jpg` marked both ways the reader reads
-  (`properties="cover-image"` and `<meta name="cover">`).
-- **Titles.** The reader cannot pass the listed title to the Worker:
-  templates are substituted unencoded and the firmware sends the URL path
-  as is (`SecureHttpClient::parseUrl`), so spaces would break the request,
-  and Instapaper has no endpoint for one bookmark (`GET /bookmarks/{id}` is
-  405). Reader downloads therefore use the parsed page title without a
-  trailing " — Site" that matches the article's site; the web sync sends the
-  listed title, encoded, as `&title=` before the raw `url`.
-- **CPU.** The free plan allows about 10 ms of CPU per request. HTML parsing
-  is cheap (1 ms for a 60 KB body); deflating the text and the CRC-32 over
-  every image byte cost the most, so the CRC is slice-by-4 (about 1.5 ms per
-  MB in Node) and images are not deflated.
+## Step 3 (optional): Set up the converter
 
-## Design notes
+The converter is a small Cloudflare Worker, included in this plugin's source
+repository, that turns an Instapaper article and its images into an EPUB.
+With it, articles include their images, there is no size limit, and you can
+download articles on the reader itself. Without it, the web page builds
+text-only EPUBs. The reader cannot do this alone: Instapaper only gives
+article text as JSON, which the reader cannot open.
 
-- **Transport.** The device relay keeps the whole response in RAM and refuses
-  more than 32 KB. A 10-item bookmark list is about 11 KB, but one article
-  was 289 KB of JSON. Lists and articles therefore go through `/api/fetch`,
-  which streams to `download.json` in the plugin folder; the page then reads
-  that file. `/api/fetch` does not return the body of a failed request, so on
-  failure the plugin repeats the request through the relay to get the status.
-- **EPUB.** One XHTML chapter, plus `nav.xhtml` and `toc.ncx`. Elements are
-  kept without attributes from a short list (paragraphs, headings, lists,
-  quotes, tables, emphasis); scripts, media and forms are dropped; other
-  elements are unwrapped. An unwrapped block inside a text element becomes a
-  line break, and a top-level block holding text becomes a paragraph, so words
-  do not run together. Entries are deflated with `CompressionStream` when the
-  browser has it, because `/api/plugin-fs` accepts at most 256 KB.
-- **State and names.** Every download, from the web sync or the reader's
-  catalog, writes `<file>.meta.json` with `instapaper_id`. The web sync scans
-  `/Instapaper/` for those sidecars, so it knows reader downloads too, and
-  names files with `readerFileName()`, a copy of
-  `StringUtils::sanitizeFilenamePreservingExtension("{title}.epub", 100)`.
-  A different file by that name gets ` (<id>)` instead of being replaced.
-  `state.json` caches the ID-to-file map, the archive check's `since`, and
-  the keys of highlights already sent; only files with a sidecar are ever
-  deleted.
-- **Archive check.** `GET /bookmarks?since=` returns everything changed since
-  then, across all sections, with `deleted_ids`, paged by offset. Archived or
-  deleted IDs among the articles on the card are deleted, except those in
-  the folder being synced. `since` is saved five minutes early, so the next
-  check overlaps rather than misses.
-- **Highlights.** The card reads `/.crosspoint/clippings/epub_*.bin`
-  (`ClippingStore`, versions 1 to 4), finds each book's `instapaper_id` from
-  its sidecar, and posts each passage to `POST /bookmarks/{id}/highlights`
-  through the relay. 400 means Instapaper already has it; 403 is the free
-  plan's five-a-month limit and stops the run.
-- **Language.** The parse response has no language. The plugin uses the
-  dominant script (Cyrillic, Greek, Hebrew, Arabic, CJK), else the browser's
-  language when it uses Latin script, else English.
+The Worker runs on your own Cloudflare account. The free plan is enough.
 
-## Tested against
+1. Create a free account at
+   [dash.cloudflare.com/sign-up](https://dash.cloudflare.com/sign-up) and
+   confirm your email address.
+2. On your computer, install [Node.js](https://nodejs.org) 24 or newer.
+3. Download or clone the plugin's repository,
+   [github.com/osteotek/instapaper.crosspoint-plugin](https://github.com/osteotek/instapaper.crosspoint-plugin), and open a
+   terminal in its folder (the one with `cloudflare.config.ts`).
+4. Install the tools:
 
-The real Instapaper API, from
-[crosspoint-simulator](https://github.com/crosspoint-reader/crosspoint-simulator)
-running the firmware at `72ca92fe`. The browser was jsdom; `PluginHost.js.inc`,
-`plugin.js` and every device endpoint were the firmware's own.
+   ```sh
+   npm install
+   ```
 
-- A wrong token was rejected. The right one connected and listed the user's
-  folders.
-- Syncing Home with a limit of 10 added 9 articles and skipped a PDF, in about
-  11 seconds. The largest was 9,200 words of Russian (289 KB of JSON, a 33 KB
-  EPUB). A second sync and a `sync` job added nothing.
-- Liked with a limit of 3 added 3. A limit of 2 with deletion on removed 1.
-- All EPUBs passed a ZIP and XML check, and opened in the simulated reader:
-  an English article as 22 pages, the Russian one as 102 pages with `ru`
-  hyphenation.
-- The Worker ran locally in workerd. On the simulated reader,
-  **Home > Plugins > Articles for Instapaper > Home** listed the account's
-  articles with authors, and **Fetch** downloaded two of them through the
-  Worker (8 KB in 0.8 s, 33 KB in 1.5 s). Both opened in the reader. A PDF
-  bookmark got 422 and a wrong token 401.
-- Deployed to workers.dev with `cf deploy`, the Worker converted the images of
-  four real articles: 12 of 12 (Substack), 4 of 5 (The Atlantic, an 80 x 108
-  icon dropped), 1 of 1 (a 1.9 MB New Yorker PNG became 41 KB), and 1 of 4
-  (three SVG diagrams dropped). Every kept image was a baseline JPEG within
-  800 px, 1 to 66 KB; the largest EPUB was 443 KB in 2.2 s. No request hit a
-  CPU limit error.
-- The simulated reader fetched the 12-image article from the deployed Worker
-  over HTTPS and showed its images; the reader decoded them at full scale in
-  about 2 ms each.
-- Web sync with the converter on downloaded three Archive articles from the
-  deployed Worker straight to the SD card, including the 443 KB 12-image
-  article that the 256 KB page path could not save. With the converter off,
-  the page built text-only EPUBs and the address was kept.
-- Folders: the deployed Worker's `/lists` returned Home, Archive, Liked,
-  Bitcoin and Economics, and 401 for a wrong token. The simulated reader's
-  plugin showed the same picker, and Economics listed its article.
-- Without the converter the simulated reader listed Home with its articles
-  straight from Instapaper, and Fetch failed with "Download failed". Turning
-  the converter on and off on the card switched `device.json` between
-  `lists_url` and the shipped lists, and the reader followed without a
-  restart.
-- Progress and archiving, end to end with a temporary bookmark (deleted
-  afterwards): the card added the `reader.exit` handler, and after a restart
-  the reader subscribed to it. The catalog download wrote the sidecar.
-  Leaving the article on its end page queued `percent: "100"`. On the next
-  Wi-Fi join the reader sent it, and Instapaper showed the bookmark archived
-  with progress 1.0. An earlier `percent: "0"` event was sent and dropped
-  without blocking the queue.
-- Duplicates, cleanup, highlights and covers, with a temporary bookmark
-  (deleted afterwards) and highlight uploads intercepted so as not to use
-  the free monthly five: after two reader downloads, syncing Archive found
-  both through their sidecars and downloaded nothing; Send highlights matched
-  a clipping file to its article and posted both passages once; syncing Home
-  added two articles and deleted the two archived ones. Deployed covers came
-  out as 528 x 800 baseline JPEGs, and the simulated reader built its Home
-  thumbnail from one.
-- In headless Chrome against the simulator's real Settings page, the card
-  loaded (including the `import()` of `epub.js`) and showed its setup steps
-  in both the not-connected and connected states.
-- The web card loaded `epub.js` from the device (`application/javascript`),
-  rejected a malformed converter address and one with nothing listening, and
-  saved a working one.
+5. Sign in to Cloudflare and follow the prompts (it opens a browser window
+   to confirm):
 
-The simulator runs web handlers on a worker thread, while the firmware's main
-loop releases request arguments after `handleClient()`
-(`src/network/CrossPointWebServer.cpp`). Some requests therefore lost their
-arguments in the simulator. The test harness retried only those errors and
-counted them. This does not happen on the device, where handlers run inside
-`handleClient()`.
+   ```sh
+   npx cf auth login
+   ```
 
-## Releasing
+6. Deploy the converter:
 
-Plugin Hub finds this repository by its `crosspoint-plugin` topic and installs
-the `instapaper.crosspoint-plugin/` folder from the latest GitHub Release
-(see the Plugin Hub contract in
-[crosspoint-plugin-hub](https://github.com/crosspoint-reader/crosspoint-plugin-hub)).
-To publish a version:
+   ```sh
+   npx cf deploy
+   ```
 
-1. Set the same `MAJOR.MINOR.PATCH` version in
-   `instapaper.crosspoint-plugin/manifest.json`, `instapaper.crosspoint-plugin/device.json`
-   and `package.json` (`npm test` checks they agree), and list any new runtime
-   file in the manifest's `files`.
-2. Commit, tag `vX.Y.Z`, push both, and publish a GitHub Release for the tag
-   (not a draft or prerelease).
-3. Plugin Hub's catalog refresh, every three hours, picks it up.
+   If you can use more than one Cloudflare account, it asks which one. If it
+   asks you to choose a `workers.dev` subdomain, pick any name: it becomes
+   part of the address. At the end it prints the converter's address, for
+   example `https://instapaper-epub.yourname.workers.dev`.
+7. Check it: open that address in a browser. It should say "Articles for
+   Instapaper converter".
+8. On the reader's web page, on the **Articles for Instapaper** card, find
+   **Converter (optional)**. Turn on **Use a Cloudflare Worker converter**,
+   paste the address and tap **Save converter**. The card checks that the
+   converter answers.
+9. Optional: to send reading progress and archive finished articles (see
+   [Progress and archiving](#progress-and-archiving)), also turn on **Send
+   reading progress and archive finished articles** and tap **Save
+   converter**. Then restart the reader once.
 
-The converter is deployed separately (`cf deploy`); each user runs their own.
+To update the converter later, get the new version of the repository and run
+`npx cf deploy` again. To stop using it, turn the option off and tap **Save
+converter**; the address is kept for later. To remove it completely, delete
+the `instapaper-epub` Worker in the Cloudflare dashboard under
+**Workers & Pages**.
+
+Anyone who knows the address can use the converter with their own Instapaper
+token, which counts against your Cloudflare free plan. Keep the address to
+yourself.
+
+## Use on the reader
+
+1. Open **Home > Plugins > Articles for Instapaper**.
+2. Pick **Home**, **Archive** or **Liked**; with the converter, your own
+   folders are listed too, fresh each time you open the plugin. The newest
+   100 articles of each are listed, 8 per page.
+3. With the converter, select an article and press **Fetch**. It is saved in
+   `/Instapaper/` and appears in **Browse Files** and the library.
+
+Without the converter the reader can list your articles but not download
+them: **Fetch** shows "Download failed". Use **Sync now** on the web page
+instead.
+
+With the converter, articles include their images, whether you fetch them on
+the reader or sync them on the web page. The converter has Cloudflare turn
+each image into a grayscale JPEG of at most 800 x 800 pixels, which the
+reader decodes quickly and at full detail. Each article also gets a cover, made
+from its lead image (or its first image) and sized for the reader's cover
+screen and Home thumbnails: a 528 x 800 grayscale picture, cropped around the
+most important part. To hide images, use the reader's own image setting.
+
+Articles you fetch on the reader are titled with the title of the web page,
+without a trailing site name; articles from **Sync now** use the title
+Instapaper lists. The file name always uses the title Instapaper lists.
+
+## Progress and archiving
+
+With the converter and **Send reading progress and archive finished
+articles** on:
+
+- When you leave an Instapaper article on the reader, its reading position is
+  sent to Instapaper, so its other apps continue where you stopped.
+- Every article ends with an **End of article** page. Leave the article on
+  that page, and it moves to your Instapaper Archive.
+
+The reader sends this the next time it connects to Wi-Fi: when you open the
+plugin on the reader, start File Transfer, or use another Wi-Fi feature. It
+does not turn on Wi-Fi by itself for this, to save battery.
+
+This works for articles downloaded after you turn it on (each needs a small
+`.meta.json` file next to it, written at download time). After turning the
+option on or off, restart the reader once: the reader reads this setting when
+it starts. With **Delete articles archived or deleted in Instapaper** on, the
+next web sync also removes them from the SD card.
+
+## Use on the web page
+
+1. On the card, pick a folder (Home, Archive, Liked, or one of your own
+   folders) and how many of its newest articles to download.
+2. Tap **Sync now**. A progress bar under the button shows which article is
+   downloading. Keep the page open until it says how many were added; any
+   skipped articles are listed with the reason. Articles are saved in
+   `/Instapaper/`, named the way the reader names them. Articles already on
+   the card, whether synced here or fetched on the reader, are not downloaded
+   again; skipped ones are tried again on the next sync.
+
+**Delete articles archived or deleted in Instapaper:** when this is on, a sync
+asks Instapaper what changed since the last sync and deletes the Instapaper
+articles on the card that were archived or deleted, wherever you did it: in
+Instapaper's apps, or on the reader with the archive option. The first sync
+with it on looks back 30 days. Articles in the folder you sync are kept, so
+syncing Archive keeps your archived articles. Files that did not come from
+this plugin are never deleted.
+
+## Highlights
+
+Tap **Send highlights** to send the passages you highlighted on the reader in
+Instapaper articles to Instapaper. Highlights that were sent before are not
+sent again. It works for articles downloaded with this version of the plugin
+or later (it finds them by their `.meta.json` file).
+
+- Without Instapaper Premium, Instapaper accepts five highlights a month. The
+  card says when the limit is reached; the rest are sent the next month.
+- If the same passage appears more than once in an article, Instapaper marks
+  its first occurrence.
+- Notes are not sent, and highlights deleted on the reader stay in
+  Instapaper.
+
+An app on your network can also start a web sync: send a `sync` job for the
+`instapaper` plugin to `/api/plugin-jobs` while the reader's web page (or
+`/plugins-run`) is open.
+
+## Updating
+
+Plugin Hub shows **Update** when a new version is out. Your token and settings
+stay. An update replaces `device.json`, so afterwards open the reader's web
+**Settings** page once: the card puts your folders and, if it is on, the
+progress-and-archiving handler back. If progress and archiving is on, restart
+the reader after that.
+
+## Limits
+
+- Images need the converter. SVG drawings, icons smaller than 120 pixels, and
+  images that fail to download are left out. An article keeps at most 30
+  images.
+- Cloudflare's free plan converts 5,000 different images a month. After that,
+  only images the reader can show as they are (JPEG, PNG, GIF under 1 MB) are
+  kept until the next month.
+- PDFs and videos saved to Instapaper have no text, so they cannot be
+  downloaded. So are pages Instapaper cannot extract text from.
+- Instapaper has no article language, so the plugin guesses it from the
+  writing system, for hyphenation. Latin-script articles use your browser's
+  language, or English.
+- Without the converter, a web sync skips an article whose EPUB would be over
+  256 KB, roughly 100,000 words of English. With it, there is no size limit.
+- Progress and archiving need the converter. Likes and folders are not sent
+  back to Instapaper.
+- Fetching on the reader an article that is already on the card replaces it
+  with a fresh copy (the reader's catalog does not check).
+
+## Privacy
+
+The access token is stored in `config.json` in the plugin folder on the SD
+card. Anyone with the card, or with access to the reader's web page while File
+Transfer runs, can read it. With the converter, each download sends the token
+to it; it passes the token to Instapaper and keeps nothing. To list your
+folders, the reader sends the token in the converter's web address, because
+that request cannot carry headers. The address only travels over HTTPS, but
+the reader writes it to its debug log if the request fails.
+
+To stop the token from working, tap **Disconnect**, then revoke or regenerate
+it on the application's page on instapaper.com.
+
+## Development
+
+How the plugin and the converter work, and how to release a new version:
+[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
 ## License
 
