@@ -473,8 +473,8 @@ test('syncArticles downloads EPUBs from the converter when it is on', async () =
   assert.deepEqual(Array.from(result.added), ['With pictures']);
   assert.equal(new TextDecoder().decode(device.sd.get('/Instapaper/With pictures.epub')), 'EPUB-BYTES');
   assert.ok(
-    device.calls.includes('/bookmarks/1.epub?lang=de&title=With%20pictures&url=https://news.example.org/a?x=1&y=2'),
-    'title encoded, url last and raw',
+    device.calls.includes('/bookmarks/1.epub?lang=de&title=With%20pictures&url=https%3A%2F%2Fnews.example.org%2Fa%3Fx%3D1%26y%3D2'),
+    'title and url encoded',
   );
   assert.ok(!device.calls.some((c) => c.endsWith('/parse')), 'the page does not parse when the converter is on');
   assert.equal(summary(result), 'Added 1 articles. Skipped 3:');
@@ -655,7 +655,7 @@ test('worker converts a bookmark to EPUB with the caller token', async () => {
     content: { body: '<div><p>Die Brücke über den Fluss war älter als die Stadt.</p><img src="x"></div>', direction: 'ltr' },
   };
   const { response, seen } = await callWorker(
-    '/bookmarks/42.epub?lang=de-DE&url=https://news.example.org/a?x=1&lang=fr',
+    '/bookmarks/42.epub?lang=de-DE&url=https%3A%2F%2Fnews.example.org%2Fa%3Fx%3D1%26lang%3Dfr',
     { Authorization: 'Bearer tok' },
     [200, parsedBody],
   );
@@ -678,6 +678,9 @@ test('worker converts a bookmark to EPUB with the caller token', async () => {
     [200, parsedBody],
   );
   assert.match(readZip(new Uint8Array(await titled.response.arrayBuffer()))[2].text, /<dc:title>Brücken &amp; Straßen<\/dc:title>/);
+  // An untitled bookmark sends an empty title: the page's own is used.
+  const untitled = await callWorker('/bookmarks/42.epub?lang=de&title=&url=https%3A%2F%2Fnews.example.org%2Fa', { Authorization: 'Bearer tok' }, [200, parsedBody]);
+  assert.match(readZip(new Uint8Array(await untitled.response.arrayBuffer()))[2].text, /<dc:title>Über Brücken<\/dc:title>/);
   assert.match(files[5].text, /<p><i>Ann · news\.example\.org<\/i><\/p><p>Die Brücke/);
   assert.doesNotMatch(files[5].text, /<img/);
 });
@@ -913,12 +916,14 @@ test('reader.exit drops what can never succeed and retries what may', async () =
   assert.equal((await exitEvent({ instapaper_id: '42', percent: '50' }, {}, '')).status, 401);
 });
 
-test('withExitEvents adds and removes the reader.exit handler', async () => {
+test('withExitEvents adds and removes the event handlers', async () => {
   const { withExitEvents } = await loadPlugin();
   const manifest = JSON.parse(await readFile(new URL('device.json', root), 'utf8'));
   assert.equal(manifest.events, undefined, 'shipped without event handlers');
   const on = JSON.parse(JSON.stringify(withExitEvents(manifest, true)));
-  assert.deepEqual(Object.keys(on.events), ['reader.exit']);
+  assert.deepEqual(Object.keys(on.events), ['reader.exit', 'sleep.enter']);
+  assert.deepEqual(on.events['sleep.enter'], on.events['reader.exit'], 'sleeping in an article sends it at once');
+  assert.equal(on.events['reader.exit'].require_meta, 'instapaper_id', 'only Instapaper articles queue events');
   const request = on.events['reader.exit'].request;
   assert.equal(request.url, '{cfg.worker_url}/events/exit');
   assert.equal(request.headers.Authorization, 'Bearer {token}');
@@ -995,8 +1000,7 @@ test('device.json lists Instapaper on the reader and downloads through the worke
     assert.match(l.url, /^https:\/\/www\.instapaper\.com\/api\/2\/bookmarks\?section=(archive|liked)&limit=100$/);
   }
   assert.equal(manifest.browse.lists_url, undefined);
-  // url must stay last: the worker reads it raw to the end of the query.
-  assert.equal(manifest.download.url, '{cfg.worker_url}/bookmarks/{id}.epub?lang={cfg.lang}&url={url}');
+  assert.equal(manifest.download.url, '{cfg.worker_url}/bookmarks/{id}.epub?lang={cfg.lang}&title={title_enc}&url={url_enc}');
   assert.equal(manifest.download.headers.Authorization, 'Bearer {token}');
   assert.equal(manifest.download.filename, '{title}.epub');
   assert.deepEqual(manifest.download.sidecar, { path: '{dest}.meta.json', body: '{"instapaper_id":"{id}"}' });

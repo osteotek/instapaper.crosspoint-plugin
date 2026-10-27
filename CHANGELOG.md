@@ -3,6 +3,19 @@
 Each section becomes the GitHub Release notes for that version. Plugin Hub
 offers the update; your token and settings stay.
 
+## Unreleased
+
+Needs CrossPoint firmware from 27 October 2026 or newer (newer than
+2.0.0rc).
+
+- With progress and archiving on, putting the reader to sleep in an
+  Instapaper article sends its progress (and archives it from the End of
+  article page) right away, instead of on the next Wi-Fi connection.
+- Only Instapaper articles queue progress events; sleeping in other books
+  never turns on Wi-Fi.
+- Articles fetched on the reader use the title Instapaper lists, like
+  articles from Sync now.
+
 ## 1.0.3
 
 - Plugin Hub shows a details page for the plugin before you install it.

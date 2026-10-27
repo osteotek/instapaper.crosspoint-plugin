@@ -1,11 +1,12 @@
 // Reading events from the reader: progress sync and archiving.
 //
-// The plugin's device.json binds reader.exit to POST /events/exit. The
-// firmware fires that event for every book, not only Instapaper articles,
-// and keeps an event queued (blocking later ones) until it gets a 2xx. So
-// anything that is not about an Instapaper article, or that can never
-// succeed, is answered 200 and dropped; only failures that may pass (an
-// invalid token, rate limits, Instapaper being down) are retried.
+// The plugin's device.json binds reader.exit and sleep.enter to POST
+// /events/exit, only for books whose sidecar has an instapaper_id
+// (require_meta). The firmware keeps an event queued (blocking later ones)
+// until it gets a 2xx. So anything that can never succeed is answered 200
+// and dropped; only failures that may pass (an invalid token, rate limits,
+// Instapaper being down) are retried. Sleeping in an article sends it twice
+// (sleep.enter, then reader.exit); both calls are safe to repeat.
 
 const INSTAPAPER_API = 'https://www.instapaper.com/api/2';
 // Progress reaches 100% only on the "End of article" page the plugin adds to

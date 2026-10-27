@@ -11,6 +11,7 @@ articles you finish.
 
 ## What you need
 
+- CrossPoint firmware from 27 October 2026 or newer (newer than 2.0.0rc).
 - An Instapaper account.
 - For the optional converter: a free Cloudflare account, and a GitHub or
   GitLab account to deploy it with one button (or a computer with
@@ -129,9 +130,8 @@ from its lead image (or its first image) and sized for the reader's cover
 screen and Home thumbnails: a 528 x 800 grayscale picture, cropped around the
 most important part. To hide images, use the reader's own image setting.
 
-Articles you fetch on the reader are titled with the title of the web page,
-without a trailing site name; articles from **Sync now** use the title
-Instapaper lists. The file name always uses the title Instapaper lists.
+Articles use the title Instapaper lists, on the reader and from **Sync
+now**. An article without one is titled with the title of the web page.
 
 ## Progress and archiving
 
@@ -143,9 +143,12 @@ articles** on:
 - Every article ends with an **End of article** page. Leave the article on
   that page, and it moves to your Instapaper Archive.
 
-The reader sends this the next time it connects to Wi-Fi: when you open the
-plugin on the reader, start File Transfer, or use another Wi-Fi feature. It
-does not turn on Wi-Fi by itself for this, to save battery.
+When you put the reader to sleep in an Instapaper article, the reader turns
+on Wi-Fi for a few seconds and sends this before sleeping (with at least 20%
+battery and a saved network). Otherwise it is sent the next time the reader
+connects to Wi-Fi: when you open the plugin on the reader, start File
+Transfer, or use another Wi-Fi feature. Other books send nothing, and
+sleeping in them does not turn on Wi-Fi.
 
 This works for articles downloaded after you turn it on (each needs a small
 `.meta.json` file next to it, written at download time). After turning the

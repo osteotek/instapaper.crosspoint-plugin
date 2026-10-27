@@ -12,11 +12,8 @@
 // images.js. It keeps no state and no secrets; every request runs with the
 // token the reader sends.
 //
-// `url` comes last and is taken raw: the reader substitutes the article URL
-// into the template without encoding it, so it may contain & and =.
-// `title` is optional and encoded. The web sync sends the title Instapaper
-// lists; the reader cannot (it would put the title in the URL unencoded,
-// spaces and all), so its downloads use the page's own title.
+// All parameters are percent-encoded (the reader's {title_enc} and
+// {url_enc}). Without `title`, the article uses the page's own title.
 import { DOMParser } from 'linkedom';
 import {
   articleContent,
@@ -41,16 +38,9 @@ function textResponse(status, message) {
   });
 }
 
-// Splits the query at the raw `url=` parameter, which runs to the end.
 function readQuery(search) {
-  const match = /[?&]url=/.exec(search);
-  const head = match ? search.slice(0, match.index) : search;
-  const params = new URLSearchParams(head);
-  return {
-    lang: params.get('lang') || '',
-    title: params.get('title') || '',
-    url: match ? search.slice(match.index + match[0].length) : '',
-  };
+  const params = new URLSearchParams(search);
+  return { lang: params.get('lang') || '', title: params.get('title') || '', url: params.get('url') || '' };
 }
 
 async function instapaperMessage(response) {

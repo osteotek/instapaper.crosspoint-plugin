@@ -57,7 +57,7 @@ owner reads their own account, and the API terms do not allow sharing keys.
 
 Instapaper only returns article text as JSON, and `device.json` can only save
 a response as a file. The Worker closes that gap:
-`GET /bookmarks/{id}.epub?lang=…&url=…` with the reader's
+`GET /bookmarks/{id}.epub?lang=…&title=…&url=…` with the reader's
 `Authorization: Bearer` token calls `/parse` with the same token and returns
 the EPUB. It keeps no state and holds no secrets. `GET /` answers with a
 banner, which the web card checks before saving the address.
@@ -91,13 +91,14 @@ banner, which the web card checks before saving the address.
   straight to Instapaper, so listing works without the converter (Fetch then
   fails: there is nothing to build the EPUB). With the converter on, the card
   replaces them with `lists_url`. `manifestFor()` derives the whole
-  manifest state (lists and the `reader.exit` handler) from the settings; the
+  manifest state (lists and the event handlers) from the settings; the
   card applies it on Save converter and whenever it loads, which also repairs
   a `device.json` overwritten by copying a new plugin version. Lists need no
-  restart; the event handler does.
-- **`url` comes last.** The reader puts `{url}` into the download URL without
-  encoding it, so the Worker takes everything after `url=` as the article
-  address. It is used only for the byline and `dc:source`.
+  restart; the event handlers do.
+- **Encoded fields.** The download URL uses `{title_enc}` and `{url_enc}`,
+  which the firmware percent-encodes (`catalog.encoded_item_fields`), so the
+  Worker reads ordinary query parameters. `url` is used only for the byline
+  and `dc:source`.
 - **Errors.** The Worker passes Instapaper's 401, 403 and 429 through, and
   answers 422 when Instapaper has no text for the bookmark.
 - **Progress and archiving.** Every download writes the sidecar
@@ -105,15 +106,21 @@ banner, which the web card checks before saving the address.
   `/api/plugin-fs` in the web sync). While the option is on, the card adds a
   `reader.exit` handler to `device.json` that posts `{instapaper_id, percent,
   ts}` to the Worker's `POST /events/exit` (`worker/events.js`). The Worker
-  sends `percent` as Instapaper progress and archives at 100%. The firmware
-  fires `reader.exit` for every book and keeps an undelivered event queued,
-  blocking later ones, so the Worker answers 200 to anything it can never
-  act on (another book, a missing ID, a deleted bookmark) and only lets
-  token, rate-limit and server errors retry. The handler is removed when the
-  option is off, because without the converter every event would fail. The
-  handler has no `connect`, so events wait for the next Wi-Fi connection
-  instead of joining Wi-Fi at every sleep. Event subscriptions are read at
-  boot, hence the restart.
+  sends `percent` as Instapaper progress and archives at 100%. The same
+  request is bound to `sleep.enter`, which joins Wi-Fi at sleep, so
+  sleeping in an article sends it before the reader sleeps; `reader.exit`
+  alone would wait for the next Wi-Fi connection. Both handlers have
+  `require_meta: "instapaper_id"`, so the firmware queues events only for
+  books whose sidecar has the ID: other books queue nothing and never make
+  the reader join Wi-Fi at sleep. Sleeping in an article sends the request
+  twice (`sleep.enter` at sleep, then `reader.exit` on the next connection);
+  progress and the archive move are both safe to repeat. The firmware keeps
+  an undelivered event queued, blocking later ones, so the Worker answers
+  200 to anything it can never act on (a missing ID, a deleted bookmark)
+  and only lets token, rate-limit and server errors retry. The handlers are
+  removed when the option is off, because without the converter every
+  event would fail. Event subscriptions are read at boot, hence the
+  restart.
 - **End page.** The reader reports progress for the top of the current page
   (`EpubReaderActivity::getScreenshotInfo`), so the last page of an N-page
   article reports (N-1)/N, and no threshold works for short articles. Every
@@ -147,13 +154,11 @@ banner, which the web card checks before saving the address.
   baseline JPEG within those limits and under 1 MB. The cover is a separate
   `images/cover.jpg` marked both ways the reader reads
   (`properties="cover-image"` and `<meta name="cover">`).
-- **Titles.** The reader cannot pass the listed title to the Worker:
-  templates are substituted unencoded and the firmware sends the URL path
-  as is (`SecureHttpClient::parseUrl`), so spaces would break the request,
-  and Instapaper has no endpoint for one bookmark (`GET /bookmarks/{id}` is
-  405). Reader downloads therefore use the parsed page title without a
-  trailing " — Site" that matches the article's site; the web sync sends the
-  listed title, encoded, as `&title=` before the raw `url`.
+- **Titles.** The reader and the web sync both send the listed title as
+  `&title=` (Instapaper has no endpoint for one bookmark, `GET
+  /bookmarks/{id}` is 405, so the Worker cannot look it up). An untitled
+  bookmark sends an empty one, and the Worker uses the parsed page title
+  without a trailing " — Site" that matches the article's site.
 - **CPU.** The free plan allows about 10 ms of CPU per request. HTML parsing
   is cheap (1 ms for a 60 KB body); deflating the text and the CRC-32 over
   every image byte cost the most, so the CRC is slice-by-4 (about 1.5 ms per

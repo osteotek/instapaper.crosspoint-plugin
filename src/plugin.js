@@ -51,13 +51,16 @@
     return { use_worker: use && !!address, worker_address: address, worker_url: use ? address : '' };
   }
 
-  // Progress and archiving: the reader queues a reader.exit event for every
-  // book it leaves and sends it on its next Wi-Fi connection; the converter
-  // drops events for other books, and archives an article left on its "End
-  // of article" page (worker/events.js). The handler lives in device.json
-  // only while the option is on, because the firmware keeps retrying events
-  // it cannot deliver. It reads the article ID from the book's sidecar,
-  // written at download time.
+  // Progress and archiving: the reader queues a reader.exit event when you
+  // leave an Instapaper article and sends it on its next Wi-Fi connection.
+  // The same request is bound to sleep.enter, which turns Wi-Fi on at sleep,
+  // so sleeping in an article sends it at once. `require_meta` limits both to
+  // books with the article ID in their sidecar (written at download time):
+  // other books queue nothing, so sleeping in them never turns Wi-Fi on. The
+  // converter archives an article left on its "End of article" page
+  // (worker/events.js). The handlers live in device.json only while the
+  // option is on, because the firmware keeps retrying events it cannot
+  // deliver.
   const EXIT_HANDLER = {
     request: {
       method: 'POST',
@@ -65,12 +68,13 @@
       headers: { Authorization: 'Bearer {token}', 'Content-Type': 'application/json' },
       body: '{"instapaper_id":"{meta.instapaper_id}","percent":"{event.percent}","ts":"{event.ts}"}',
     },
+    require_meta: 'instapaper_id',
   };
 
-  // `manifest` with the reader.exit handler added or removed.
+  // `manifest` with the event handlers added or removed.
   function withExitEvents(manifest, enabled) {
     const out = Object.assign({}, manifest);
-    if (enabled) out.events = { 'reader.exit': EXIT_HANDLER };
+    if (enabled) out.events = { 'reader.exit': EXIT_HANDLER, 'sleep.enter': EXIT_HANDLER };
     else delete out.events;
     return out;
   }
@@ -107,9 +111,7 @@
     return [file + '.meta.json', bytesToBase64(utf8Encoder.encode(JSON.stringify({ instapaper_id: String(bookmarkId) })))];
   }
 
-  // The request the reader's device.json download makes, plus the title,
-  // which the reader cannot send. `url` stays last and unencoded: the Worker
-  // reads it raw to the end of the query.
+  // The request the reader's device.json download makes.
   function workerArticleUrl(cfg, bookmark) {
     return (
       cfg.worker_url +
@@ -117,9 +119,10 @@
       bookmark.id +
       '.epub?lang=' +
       encodeURIComponent(cfg.lang || 'en') +
-      (bookmark.title ? '&title=' + encodeURIComponent(bookmark.title) : '') +
+      '&title=' +
+      encodeURIComponent(bookmark.title || '') +
       '&url=' +
-      (bookmark.url || '')
+      encodeURIComponent(bookmark.url || '')
     );
   }
 
@@ -654,8 +657,9 @@
       'only.</p>' +
       '<p style="color:#666">With progress and archiving on, when you leave an Instapaper article on the reader, ' +
       'its reading position is sent to Instapaper. Every article ends with an "End of article" page: leave the ' +
-      'article on that page and it moves to your Instapaper Archive. This happens the next time the reader ' +
-      'connects to Wi-Fi. It works for articles downloaded after you turn it on.</p>' +
+      'article on that page and it moves to your Instapaper Archive. This is sent when you put the reader to sleep ' +
+      'in the article (Wi-Fi turns on for a few seconds), or else the next time the reader connects to Wi-Fi. It ' +
+      'works for articles downloaded after you turn it on.</p>' +
       converterHelp +
       '</div>';
 
@@ -771,7 +775,7 @@
         if (JSON.stringify(after) === JSON.stringify(before)) return false;
         const text = JSON.stringify(after, null, 2) + '\n';
         await api.writeFile(api.dir + '/device.json', bytesToBase64(utf8Encoder.encode(text)));
-        return !!before.events !== !!after.events;
+        return JSON.stringify(before.events) !== JSON.stringify(after.events);
       });
       manifestQueue = run.catch(() => {});
       return run;

@@ -31,7 +31,7 @@
     ]
   },
   "download": {
-    "url": "{cfg.worker_url}/bookmarks/{id}.epub?lang={cfg.lang}&url={url}",
+    "url": "{cfg.worker_url}/bookmarks/{id}.epub?lang={cfg.lang}&title={title_enc}&url={url_enc}",
     "method": "GET",
     "headers": {
       "Authorization": "Bearer {token}"
