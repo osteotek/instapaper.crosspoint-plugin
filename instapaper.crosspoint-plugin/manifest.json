@@ -3,7 +3,7 @@
   "title": "Articles for Instapaper",
   "description": "Download your saved Instapaper articles as EPUB.",
   "author": "Arthur Tazhitdinov",
-  "version": "1.0.3",
+  "version": "1.1.0",
   "mount": "settings",
   "compatibility": {
     "firmware_family": [

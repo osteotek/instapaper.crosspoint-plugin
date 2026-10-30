@@ -3,7 +3,7 @@
 Each section becomes the GitHub Release notes for that version. Plugin Hub
 offers the update; your token and settings stay.
 
-## Unreleased
+## 1.1.0
 
 Needs CrossPoint firmware from 30 October 2026 or newer (newer than
 2.0.0rc). Firmware from 27 October on works without the folders and
@@ -15,10 +15,11 @@ last-page archiving below.
   the URL, is gone.
 - Leaving an article on its last page archives it. New articles no longer
   end with an "End of article" page; older ones still archive from that page.
-
+  Update your converter for this (`npm run deploy`, or redeploy it from the
+  Cloudflare dashboard).
 - With progress and archiving on, putting the reader to sleep in an
-  Instapaper article sends its progress (and archives it from the End of
-  article page) right away, instead of on the next Wi-Fi connection.
+  Instapaper article sends its progress (and archives it if you finished it)
+  right away, instead of on the next Wi-Fi connection.
 - Only Instapaper articles queue progress events; sleeping in other books
   never turns on Wi-Fi.
 - Articles fetched on the reader use the title Instapaper lists, like
