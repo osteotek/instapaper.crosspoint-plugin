@@ -8,7 +8,6 @@ import * as epub from '../src/epub.js';
 import worker from '../worker/index.js';
 import { COVER_TRANSFORM, fetchCover, fetchImages, imageInfo, readerCanShow } from '../worker/images.js';
 import { readerExit } from '../worker/events.js';
-import { folderLists } from '../worker/lists.js';
 import { buildFiles } from '../scripts/build.mjs';
 import { releaseNotes } from '../scripts/release-notes.mjs';
 
@@ -135,7 +134,7 @@ test('buildEpub writes a valid EPUB with mimetype first and stored', async () =>
   const files = readZip(bytes);
   assert.deepEqual(
     Array.from(files, (f) => f.name),
-    ['mimetype', 'META-INF/container.xml', 'OEBPS/content.opf', 'OEBPS/nav.xhtml', 'OEBPS/toc.ncx', 'OEBPS/article.xhtml', 'OEBPS/end.xhtml'],
+    ['mimetype', 'META-INF/container.xml', 'OEBPS/content.opf', 'OEBPS/nav.xhtml', 'OEBPS/toc.ncx', 'OEBPS/article.xhtml'],
   );
   assert.equal(files[0].offset, 0);
   assert.equal(files[0].method, 0);
@@ -860,41 +859,33 @@ test('fetchCover sizes the cover for the reader screen, or keeps a usable origin
   assert.equal(cover.resized, false);
 });
 
-test('reader.exit sends progress and archives articles left on the end page', async () => {
-  let r = await exitEvent({ instapaper_id: '42', percent: '40', ts: '1761400000' });
+test('reader.exit sends progress and archives articles read to their last page', async () => {
+  let r = await exitEvent({ instapaper_id: '42', percent: '40', end_percent: '45', ts: '1761400000' });
   assert.equal(r.status, 200);
   assert.deepEqual(r.calls, [{ path: '/bookmarks/42', auth: 'Bearer tok', body: { progress: { percentage: 0.4, timestamp: 1761400000 } } }]);
   assert.deepEqual(r.json, { id: 42, percent: 40, progress: true, archived: false });
 
-  r = await exitEvent({ instapaper_id: '42', percent: '99', ts: '1761400000' });
-  assert.equal(r.json.archived, false, 'the last article page is not the end page');
+  r = await exitEvent({ instapaper_id: '42', percent: '83', end_percent: '99', ts: '1761400000' });
+  assert.equal(r.json.archived, false, 'the page before the last');
 
-  r = await exitEvent({ instapaper_id: '42', percent: '100', ts: '0' });
+  r = await exitEvent({ instapaper_id: '42', percent: '83', end_percent: '100', ts: '0' });
   assert.deepEqual(r.calls.map((c) => c.path), ['/bookmarks/42', '/bookmarks/42/move']);
+  assert.equal(r.calls[0].body.progress.percentage, 1, 'a finished article is read to 100%');
   assert.deepEqual(r.calls[1].body, { section: 'archive' });
   assert.equal(r.json.archived, true);
   assert.ok(r.calls[0].body.progress.timestamp > 1700000000, 'clock not set: the Worker uses its own time');
 
-  r = await exitEvent({ instapaper_id: '42', percent: '0', ts: '1761400000' });
-  assert.equal(r.calls.length, 0, 'leaving at the start does not reset progress');
-});
+  r = await exitEvent({ instapaper_id: '42', percent: '0', end_percent: '100', ts: '1761400000' });
+  assert.equal(r.json.archived, true, 'a one-page article left on its only page');
 
-test('the end page starts at 100% the way the reader computes progress', async () => {
-  const { buildEpub, articleContent } = epub;
-  for (const words of [3, 400, 20000]) {
-    const body = '<p>' + 'word '.repeat(words) + '</p>';
-    const files = readZip(await buildEpub(sampleArticle, articleContent(parseHtml(body), 'x', 'en'), 0));
-    const size = (name) => new TextEncoder().encode(files.find((f) => f.name === name).text).length;
-    const article = size('OEBPS/article.xhtml');
-    const end = size('OEBPS/end.xhtml');
-    // Epub::calculateProgress at the top of the end page, rounded like
-    // EpubReaderActivity::getScreenshotInfo.
-    assert.equal(Math.floor((article / (article + end)) * 100 + 0.5), 100, words + ' words');
-    assert.match(files.find((f) => f.name === 'OEBPS/end.xhtml').text, /End of article/);
-    assertWellFormedXml(files.find((f) => f.name === 'OEBPS/article.xhtml').text, 'padded article');
-  }
-  const opf = readZip(await buildEpub(sampleArticle, articleContent(parseHtml('<p>x</p>'), 'x', 'en'), 0))[2].text;
-  assert.match(opf, /<itemref idref="article"\/><itemref idref="end"\/><\/spine>/);
+  r = await exitEvent({ instapaper_id: '42', percent: '0', end_percent: '20', ts: '1761400000' });
+  assert.equal(r.calls.length, 0, 'leaving at the start does not reset progress');
+
+  // Firmware without end_percent sends the variable unfilled: percent decides.
+  r = await exitEvent({ instapaper_id: '42', percent: '99', end_percent: '{event.end_percent}' });
+  assert.equal(r.json.archived, false);
+  r = await exitEvent({ instapaper_id: '42', percent: '100', end_percent: '{event.end_percent}' });
+  assert.equal(r.json.archived, true, 'the end-of-book screen');
 });
 
 test('reader.exit drops what can never succeed and retries what may', async () => {
@@ -929,57 +920,28 @@ test('withExitEvents adds and removes the event handlers', async () => {
   assert.equal(request.headers.Authorization, 'Bearer {token}');
   assert.equal(on.events['reader.exit'].connect, undefined, 'sent on the next Wi-Fi connection, not at sleep');
   // The body stays valid JSON whatever the reader substitutes.
-  const filled = request.body.replace('{meta.instapaper_id}', '42').replace('{event.percent}', '97').replace('{event.ts}', '1761400000');
-  assert.deepEqual(JSON.parse(filled), { instapaper_id: '42', percent: '97', ts: '1761400000' });
+  const filled = request.body
+    .replace('{meta.instapaper_id}', '42')
+    .replace('{event.percent}', '97')
+    .replace('{event.end_percent}', '100')
+    .replace('{event.ts}', '1761400000');
+  assert.deepEqual(JSON.parse(filled), { instapaper_id: '42', percent: '97', end_percent: '100', ts: '1761400000' });
   assert.ok(JSON.parse(request.body), 'unfilled variables keep the body valid');
   assert.deepEqual(JSON.parse(JSON.stringify(withExitEvents(on, false))), manifest);
 });
 
-test('worker /lists answers the reader with Home, Archive, Liked and your folders', async () => {
-  const calls = [];
-  const fakeFetch = async (url, init) => {
-    calls.push({ url, auth: init.headers.Authorization });
-    if (init.headers.Authorization !== 'Bearer tok') return new Response('{}', { status: 401 });
-    return new Response(JSON.stringify({ folders: [{ id: 2358617, title: 'Bitcoin', count: 0 }, { id: 2358619, title: 'Economics & more', count: 1 }] }));
-  };
-  const call = (path, headers = {}) => folderLists(new Request('https://w.example' + path, { headers }), fakeFetch);
-
-  const r = await call('/lists?token=tok');
-  assert.equal(r.status, 200);
-  assert.deepEqual(calls, [{ url: 'https://www.instapaper.com/api/2/folders', auth: 'Bearer tok' }]);
-  const { lists } = await r.json();
-  assert.deepEqual(
-    lists.map((l) => l.title + ' -> ' + l.url.replace('https://www.instapaper.com/api/2/bookmarks?', '')),
-    [
-      'Home -> section=home&limit=100',
-      'Archive -> section=archive&limit=100',
-      'Liked -> section=liked&limit=100',
-      'Bitcoin -> folder_id=2358617&limit=100',
-      'Economics & more -> folder_id=2358619&limit=100',
-    ],
-  );
-  assert.equal((await call('/lists', { Authorization: 'Bearer tok' })).status, 200, 'a header works too');
-  assert.equal((await call('/lists')).status, 401);
-  assert.equal((await call('/lists?token=bad')).status, 401);
-  const routed = await worker.fetch(new Request('https://w.example/lists', { method: 'POST' }));
-  assert.equal(routed.status, 405);
-});
-
-test('manifestFor switches the reader lists and events with the converter', async () => {
+test('manifestFor adds the event handlers only with the converter and archiving on', async () => {
   const { manifestFor } = await loadPlugin();
   const shipped = JSON.parse(await readFile(new URL('device.json', root), 'utf8'));
   const plain = (o) => JSON.parse(JSON.stringify(o));
   assert.deepEqual(plain(manifestFor(shipped, {})), shipped, 'the shipped file matches the default settings');
 
   const converter = { use_worker: true, worker_address: 'https://w', worker_url: 'https://w' };
-  const on = plain(manifestFor(shipped, converter));
-  assert.equal(on.browse.lists, undefined);
-  assert.equal(on.browse.lists_url, '{cfg.worker_url}/lists?token={token}');
-  assert.equal(on.browse.url, shipped.browse.url);
-  assert.equal(on.events, undefined, 'archiving is a separate switch');
+  assert.deepEqual(plain(manifestFor(shipped, converter)), shipped, 'the lists do not depend on the converter');
 
   const archiving = plain(manifestFor(shipped, Object.assign({ archive: true }, converter)));
   assert.ok(archiving.events['reader.exit']);
+  assert.deepEqual(archiving.browse, shipped.browse);
   assert.deepEqual(plain(manifestFor(archiving, { use_worker: false, worker_address: 'https://w', archive: true })), shipped, 'converter off: back to the shipped file');
   assert.equal(manifestFor(shipped, { archive: true }).events, undefined, 'archiving needs the converter');
 });
@@ -992,14 +954,18 @@ test('device.json lists Instapaper on the reader and downloads through the worke
   assert.deepEqual(manifest.config, { file: 'config.json' });
   assert.equal(manifest.browse.headers.Authorization, 'Bearer {token}');
   assert.equal(manifest.browse.items, 'bookmarks');
-  // No {page}: the reader fetches the list once and pages it locally.
-  assert.equal(manifest.browse.url, 'https://www.instapaper.com/api/2/bookmarks?section=home&limit=100');
-  // Shipped for use without the converter: lists straight from Instapaper.
-  assert.deepEqual(manifest.browse.lists.map((l) => l.title), ['Home', 'Archive', 'Liked']);
-  for (const l of manifest.browse.lists.filter((l) => l.url)) {
-    assert.match(l.url, /^https:\/\/www\.instapaper\.com\/api\/2\/bookmarks\?section=(archive|liked)&limit=100$/);
-  }
-  assert.equal(manifest.browse.lists_url, undefined);
+  // No {page}: the reader fetches the list once and pages it locally. The
+  // browse URL serves the folders, which carry only an id.
+  assert.equal(manifest.browse.url, 'https://www.instapaper.com/api/2/bookmarks?folder_id={list_id_enc}&limit=100');
+  assert.deepEqual(
+    manifest.browse.lists.map((l) => l.title + ' -> ' + l.url),
+    ['Home', 'Archive', 'Liked'].map((t) => t + ' -> https://www.instapaper.com/api/2/bookmarks?section=' + t.toLowerCase() + '&limit=100'),
+  );
+  // Your folders follow, straight from Instapaper ({"folders": [{id, title}]}).
+  assert.equal(manifest.browse.lists_url, 'https://www.instapaper.com/api/2/folders');
+  assert.deepEqual(manifest.browse.lists_headers, { Authorization: 'Bearer {token}' });
+  assert.equal(manifest.browse.lists_items, 'folders');
+  assert.equal(manifest.browse.lists_fields, undefined, 'the default title and id fields fit');
   assert.equal(manifest.download.url, '{cfg.worker_url}/bookmarks/{id}.epub?lang={cfg.lang}&title={title_enc}&url={url_enc}');
   assert.equal(manifest.download.headers.Authorization, 'Bearer {token}');
   assert.equal(manifest.download.filename, '{title}.epub');

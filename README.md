@@ -11,7 +11,9 @@ articles you finish.
 
 ## What you need
 
-- CrossPoint firmware from 27 October 2026 or newer (newer than 2.0.0rc).
+- CrossPoint firmware from 30 October 2026 or newer (newer than 2.0.0rc).
+  Older firmware from 27 October on works, without your folders on the
+  reader and without archiving from an article's last page.
 - An Instapaper account.
 - For the optional converter: a free Cloudflare account, and a GitHub or
   GitLab account to deploy it with one button (or a computer with
@@ -112,9 +114,9 @@ yourself.
 ## Use on the reader
 
 1. Open **Home > Plugins > Articles for Instapaper**.
-2. Pick **Home**, **Archive** or **Liked**; with the converter, your own
-   folders are listed too, fresh each time you open the plugin. The newest
-   100 articles of each are listed, 8 per page.
+2. Pick **Home**, **Archive**, **Liked** or one of your own folders, which
+   are listed fresh each time you open the plugin. The newest 100 articles
+   of each are listed, 8 per page.
 3. With the converter, select an article and press **Fetch**. It is saved in
    `/Instapaper/` and appears in **Browse Files** and the library.
 
@@ -140,8 +142,9 @@ articles** on:
 
 - When you leave an Instapaper article on the reader, its reading position is
   sent to Instapaper, so its other apps continue where you stopped.
-- Every article ends with an **End of article** page. Leave the article on
-  that page, and it moves to your Instapaper Archive.
+- Leave an article on its last page, and it moves to your Instapaper
+  Archive. (Articles downloaded with version 1.0.3 or older end with an
+  **End of article** page; leave those on that page.)
 
 When you put the reader to sleep in an Instapaper article, the reader turns
 on Wi-Fi for a few seconds and sends this before sleeping (with at least 20%
@@ -197,9 +200,8 @@ An app on your network can also start a web sync: send a `sync` job for the
 
 Plugin Hub shows **Update** when a new version is out. Your token and settings
 stay. An update replaces `device.json`, so afterwards open the reader's web
-**Settings** page once: the card puts your folders and, if it is on, the
-progress-and-archiving handler back. If progress and archiving is on, restart
-the reader after that.
+**Settings** page once: if progress and archiving is on, the card puts its
+handler back. Then restart the reader.
 
 ## Limits
 
@@ -226,10 +228,7 @@ the reader after that.
 The access token is stored in `config.json` in the plugin folder on the SD
 card. Anyone with the card, or with access to the reader's web page while File
 Transfer runs, can read it. With the converter, each download sends the token
-to it; it passes the token to Instapaper and keeps nothing. To list your
-folders, the reader sends the token in the converter's web address, because
-that request cannot carry headers. The address only travels over HTTPS, but
-the reader writes it to its debug log if the request fails.
+to it; it passes the token to Instapaper and keeps nothing.
 
 To stop the token from working, tap **Disconnect**, then revoke or regenerate
 it on the application's page on instapaper.com.

@@ -57,16 +57,16 @@
   // so sleeping in an article sends it at once. `require_meta` limits both to
   // books with the article ID in their sidecar (written at download time):
   // other books queue nothing, so sleeping in them never turns Wi-Fi on. The
-  // converter archives an article left on its "End of article" page
-  // (worker/events.js). The handlers live in device.json only while the
-  // option is on, because the firmware keeps retrying events it cannot
-  // deliver.
+  // converter archives an article left on its last page, which the reader
+  // reports as end_percent 100 (worker/events.js). The handlers live in
+  // device.json only while the option is on, because the firmware keeps
+  // retrying events it cannot deliver.
   const EXIT_HANDLER = {
     request: {
       method: 'POST',
       url: '{cfg.worker_url}/events/exit',
       headers: { Authorization: 'Bearer {token}', 'Content-Type': 'application/json' },
-      body: '{"instapaper_id":"{meta.instapaper_id}","percent":"{event.percent}","ts":"{event.ts}"}',
+      body: '{"instapaper_id":"{meta.instapaper_id}","percent":"{event.percent}","end_percent":"{event.end_percent}","ts":"{event.ts}"}',
     },
     require_meta: 'instapaper_id',
   };
@@ -79,31 +79,10 @@
     return out;
   }
 
-  // The reader's list picker. Without the converter it lists Home, Archive
-  // and Liked straight from Instapaper. With it, the converter's /lists adds
-  // your folders (worker/lists.js); the reader fetches browse.lists_url
-  // without headers, hence the token in the query. The reader only loads
-  // lists_url when browse.lists is empty, so it is one or the other.
-  const DIRECT_LISTS = [
-    { title: 'Home' },
-    { title: 'Archive', url: API_BASE + '/bookmarks?section=archive&limit=100' },
-    { title: 'Liked', url: API_BASE + '/bookmarks?section=liked&limit=100' },
-  ];
-  const WORKER_LISTS_URL = '{cfg.worker_url}/lists?token={token}';
-
-  function withListSource(manifest, useWorker) {
-    const browse = Object.assign({}, manifest.browse);
-    delete browse.lists;
-    delete browse.lists_url;
-    if (useWorker) browse.lists_url = WORKER_LISTS_URL;
-    else browse.lists = DIRECT_LISTS;
-    return Object.assign({}, manifest, { browse });
-  }
-
   // device.json as the saved settings need it.
   function manifestFor(manifest, cfg) {
     const converter = converterSettings(cfg);
-    return withExitEvents(withListSource(manifest, converter.use_worker), converter.use_worker && !!cfg.archive);
+    return withExitEvents(manifest, converter.use_worker && !!cfg.archive);
   }
 
   // The article's ID next to the book ("<book>.meta.json"), for the event.
@@ -554,7 +533,6 @@
       normalizeWorkerUrl,
       converterSettings,
       withExitEvents,
-      withListSource,
       manifestFor,
       account,
       listSections,
@@ -656,8 +634,8 @@
       'reader itself (Home &gt; Plugins). Your token is sent to it with each download. Without it, Sync saves text ' +
       'only.</p>' +
       '<p style="color:#666">With progress and archiving on, when you leave an Instapaper article on the reader, ' +
-      'its reading position is sent to Instapaper. Every article ends with an "End of article" page: leave the ' +
-      'article on that page and it moves to your Instapaper Archive. This is sent when you put the reader to sleep ' +
+      'its reading position is sent to Instapaper. Leave an article on its last page and it moves to your ' +
+      'Instapaper Archive. This is sent when you put the reader to sleep ' +
       'in the article (Wi-Fi turns on for a few seconds), or else the next time the reader connects to Wi-Fi. It ' +
       'works for articles downloaded after you turn it on.</p>' +
       converterHelp +
@@ -762,9 +740,8 @@
     const writeConfig = (cfg) => api.writeFile(CONFIG_PATH, bytesToBase64(utf8Encoder.encode(JSON.stringify(cfg))));
 
     // Brings device.json in line with `cfg`. Returns whether the reader must
-    // restart: it reads event handlers at boot, but re-reads the lists every
-    // time the plugin opens. Runs one at a time, since the card also calls it
-    // when it loads.
+    // restart, as it reads event handlers at boot. Runs one at a time, since
+    // the card also calls it when it loads.
     let manifestQueue = Promise.resolve();
     function syncManifest(cfg) {
       const run = manifestQueue.then(async () => {

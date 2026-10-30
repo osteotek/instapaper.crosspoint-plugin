@@ -1,7 +1,6 @@
 // Converter Worker for Articles for Instapaper.
 //
 // GET /bookmarks/{id}.epub?lang=<fallback>&title=<title>&url=<article URL>
-// GET /lists?token=<token> (the reader's list picker; see lists.js)
 // POST /events/exit (reading progress and archiving; see events.js)
 // with the caller's own "Authorization: Bearer <Instapaper token>".
 //
@@ -25,7 +24,6 @@ import {
 } from '../src/epub.js';
 import { readerExit } from './events.js';
 import { fetchCover, fetchImages } from './images.js';
-import { folderLists } from './lists.js';
 
 const INSTAPAPER_API = 'https://www.instapaper.com/api/2';
 // Matches WORKER_BANNER in plugin.js, which checks the address with it.
@@ -53,15 +51,12 @@ async function instapaperMessage(response) {
 
 export async function convert(request) {
   const url = new URL(request.url);
-  if (url.pathname === '/lists') {
-    return request.method === 'GET' ? folderLists(request) : textResponse(405, 'Use GET.');
-  }
   if (url.pathname === '/events/exit') {
     return request.method === 'POST' ? readerExit(request) : textResponse(405, 'Use POST.');
   }
   if (request.method !== 'GET') return textResponse(405, 'Only GET is supported.');
   if (url.pathname === '/') {
-    return textResponse(200, BANNER + '. GET /bookmarks/{id}.epub, GET /lists or POST /events/exit with your Instapaper token.');
+    return textResponse(200, BANNER + '. GET /bookmarks/{id}.epub or POST /events/exit with your Instapaper token.');
   }
   const route = /^\/bookmarks\/(\d+)\.epub$/.exec(url.pathname);
   if (!route) return textResponse(404, 'Not found.');

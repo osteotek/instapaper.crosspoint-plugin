@@ -11,7 +11,7 @@
   },
   "browse": {
     "format": "json",
-    "url": "https://www.instapaper.com/api/2/bookmarks?section=home&limit=100",
+    "url": "https://www.instapaper.com/api/2/bookmarks?folder_id={list_id_enc}&limit=100",
     "method": "GET",
     "headers": {
       "Authorization": "Bearer {token}"
@@ -25,10 +25,15 @@
     },
     "page_size": 8,
     "lists": [
-      { "title": "Home" },
+      { "title": "Home", "url": "https://www.instapaper.com/api/2/bookmarks?section=home&limit=100" },
       { "title": "Archive", "url": "https://www.instapaper.com/api/2/bookmarks?section=archive&limit=100" },
       { "title": "Liked", "url": "https://www.instapaper.com/api/2/bookmarks?section=liked&limit=100" }
-    ]
+    ],
+    "lists_url": "https://www.instapaper.com/api/2/folders",
+    "lists_headers": {
+      "Authorization": "Bearer {token}"
+    },
+    "lists_items": "folders"
   },
   "download": {
     "url": "{cfg.worker_url}/bookmarks/{id}.epub?lang={cfg.lang}&title={title_enc}&url={url_enc}",

@@ -5,8 +5,16 @@ offers the update; your token and settings stay.
 
 ## Unreleased
 
-Needs CrossPoint firmware from 27 October 2026 or newer (newer than
-2.0.0rc).
+Needs CrossPoint firmware from 30 October 2026 or newer (newer than
+2.0.0rc). Firmware from 27 October on works without the folders and
+last-page archiving below.
+
+- The reader lists your own folders after Home, Archive and Liked, also
+  without the converter. The reader gets them from Instapaper with the token
+  in a header; the converter's `/lists` address, which carried the token in
+  the URL, is gone.
+- Leaving an article on its last page archives it. New articles no longer
+  end with an "End of article" page; older ones still archive from that page.
 
 - With progress and archiving on, putting the reader to sleep in an
   Instapaper article sends its progress (and archives it from the End of

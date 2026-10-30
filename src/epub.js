@@ -185,40 +185,6 @@ export function siteName(url) {
   }
 }
 
-// The last page of every article. Turning to it is how the reader says "I
-// finished this": progress there is 100%, which the converter takes as the
-// signal to archive (worker/events.js).
-export const END_PAGE_TEXT = 'End of article';
-
-// The reader reports whole-book progress for the top of the current page,
-// with each content file weighted by its uncompressed size
-// (Epub::calculateProgress). Padding the article file to at least 200 times
-// the end page's size makes the end page start at 99.5% or more, which the
-// reader rounds to 100%, however short the article is. The padding is a
-// comment, so it is invisible and compresses to almost nothing.
-const END_PAGE_WEIGHT = 200;
-
-function endPageXhtml(lang, dir) {
-  return (
-    '<?xml version="1.0" encoding="UTF-8"?>\n<html xmlns="http://www.w3.org/1999/xhtml" lang="' +
-    lang +
-    '"' +
-    dir +
-    '><head><title>' +
-    END_PAGE_TEXT +
-    '</title></head><body><p><b>' +
-    END_PAGE_TEXT +
-    '</b></p></body></html>\n'
-  );
-}
-
-function padArticle(articleXhtml, endPage) {
-  const missing = END_PAGE_WEIGHT * utf8Encoder.encode(endPage).length - utf8Encoder.encode(articleXhtml).length;
-  if (missing <= 0) return articleXhtml;
-  const comment = '<!--' + ' '.repeat(missing) + '-->';
-  return articleXhtml.replace('</body></html>', comment + '</body></html>');
-}
-
 // `article` is {id, title, author, site, url, description, pubtime, rtl}.
 export function epubFiles(article, content, modified) {
   const title = normalizeSpace(article.title) || 'Untitled article';
@@ -274,7 +240,6 @@ export function epubFiles(article, content, modified) {
         '<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>\n' +
         '<item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>\n' +
         '<item id="article" href="article.xhtml" media-type="application/xhtml+xml"/>\n' +
-        '<item id="end" href="end.xhtml" media-type="application/xhtml+xml"/>\n' +
         imageFiles
           .map(
             (f, i) =>
@@ -291,7 +256,7 @@ export function epubFiles(article, content, modified) {
           .join('') +
         '</manifest>\n<spine toc="ncx"' +
         (article.rtl ? ' page-progression-direction="rtl"' : '') +
-        '><itemref idref="article"/><itemref idref="end"/></spine>\n</package>\n',
+        '><itemref idref="article"/></spine>\n</package>\n',
     ],
     [
       'OEBPS/nav.xhtml',
@@ -308,8 +273,7 @@ export function epubFiles(article, content, modified) {
         escapeXml(title) +
         '</text></navLabel><content src="article.xhtml"/></navPoint></navMap></ncx>\n',
     ],
-    ['OEBPS/article.xhtml', padArticle(xhtml(heading + body), endPageXhtml(lang, dir))],
-    ['OEBPS/end.xhtml', endPageXhtml(lang, dir)],
+    ['OEBPS/article.xhtml', xhtml(heading + body)],
   ].concat(imageFiles.map((f) => ['OEBPS/' + f.href, f.data]));
 }
 

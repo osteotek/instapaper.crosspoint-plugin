@@ -76,25 +76,21 @@ banner, which the web card checks before saving the address.
 - **Lists.** The browse URLs have no `{page}`, so the reader fetches the
   newest 100 once and pages them locally (`plugincatalogpaging::isStaticFeed`).
   Instapaper pages by `offset`, which the templates cannot express.
-- **Folders.** `browse.lists_url` points at the Worker's `GET /lists`, which
-  fetches `/folders` and answers in the reader's list-index shape
-  (`{"lists": [{title, url}]}`): Home, Archive, Liked, then one
-  `/bookmarks?folder_id=…&limit=100` list per folder. The reader fetches
-  `lists_url` without headers and expects that exact shape
-  (`PluginCatalogActivity::loadBrowseListIndex`), which Instapaper's own
-  `/folders` cannot meet, so the token goes in the query string
-  (`lists_url: "{cfg.worker_url}/lists?token={token}"`). The reader logs the
-  URL, token included, when that request fails.
-- **List source follows the converter.** The reader loads `lists_url` only
-  when `browse.lists` is empty, so a manifest has one or the other. The
-  shipped `device.json` has fixed Home, Archive and Liked lists that go
-  straight to Instapaper, so listing works without the converter (Fetch then
-  fails: there is nothing to build the EPUB). With the converter on, the card
-  replaces them with `lists_url`. `manifestFor()` derives the whole
-  manifest state (lists and the event handlers) from the settings; the
-  card applies it on Save converter and whenever it loads, which also repairs
-  a `device.json` overwritten by copying a new plugin version. Lists need no
-  restart; the event handlers do.
+- **Folders.** The shipped `device.json` has fixed Home, Archive and Liked
+  lists, each with its own URL, and `browse.lists_url` fetches Instapaper's
+  `/folders` with `lists_headers` carrying the token
+  (`catalog.list_index_mapping`). `lists_items: "folders"` reads the array;
+  the default `title` and `id` fields fit Instapaper's folder objects, which
+  have no `url`, so each folder browses `browse.url`
+  (`/bookmarks?folder_id={list_id_enc}&limit=100`). The reader shows the
+  folders after the fixed lists, fetches them once per visit, keeps the
+  fixed lists if the fetch fails, and shows the sign-in message on 401/403.
+  Firmware before 30 October 2026 ignores `lists_url` next to `lists` and
+  shows only the fixed lists. Listing works without the converter (Fetch then
+  fails: there is nothing to build the EPUB). `manifestFor()` only adds or
+  removes the event handlers; the card applies it on Save converter and
+  whenever it loads, which also repairs a `device.json` replaced by an
+  update. Event handlers need a restart.
 - **Encoded fields.** The download URL uses `{title_enc}` and `{url_enc}`,
   which the firmware percent-encodes (`catalog.encoded_item_fields`), so the
   Worker reads ordinary query parameters. `url` is used only for the byline
@@ -105,8 +101,9 @@ banner, which the web card checks before saving the address.
   `<book>.meta.json` with `instapaper_id` (`download.sidecar` on the reader,
   `/api/plugin-fs` in the web sync). While the option is on, the card adds a
   `reader.exit` handler to `device.json` that posts `{instapaper_id, percent,
-  ts}` to the Worker's `POST /events/exit` (`worker/events.js`). The Worker
-  sends `percent` as Instapaper progress and archives at 100%. The same
+  end_percent, ts}` to the Worker's `POST /events/exit` (`worker/events.js`).
+  The Worker sends `percent` as Instapaper progress and archives when either
+  value is 100 (then progress is sent as 100%). The same
   request is bound to `sleep.enter`, which joins Wi-Fi at sleep, so
   sleeping in an article sends it before the reader sleeps; `reader.exit`
   alone would wait for the next Wi-Fi connection. Both handlers have
@@ -121,14 +118,14 @@ banner, which the web card checks before saving the address.
   removed when the option is off, because without the converter every
   event would fail. Event subscriptions are read at boot, hence the
   restart.
-- **End page.** The reader reports progress for the top of the current page
-  (`EpubReaderActivity::getScreenshotInfo`), so the last page of an N-page
-  article reports (N-1)/N, and no threshold works for short articles. Every
-  EPUB therefore ends with a tiny `end.xhtml` page, and the article file is
-  padded with a comment to 200 times its size: progress is weighted by
-  uncompressed file size (`Epub::calculateProgress`), so the end page starts
-  at 99.5% or more, which rounds to 100%. The padding compresses to almost
-  nothing.
+- **Last page.** `percent` is progress at the top of the current page, so
+  the last page of an N-page article reports (N-1)/N. `end_percent` is
+  measured at the bottom of the page and rounded down, so it is 100 only on
+  the last page. Firmware without it leaves the literal
+  `{event.end_percent}`; the Worker then archives only at `percent` 100, on
+  the reader's end-of-book screen. Plugin 1.0.3 and older ended every EPUB
+  with an `end.xhtml` page and padded the article so that page started at
+  100%; those articles still archive from it.
 - **Images.** The parsed HTML keeps only `<img src>`. `articleContent()`
   leaves a marker for each image and lists its URL; the Worker fetches the
   images and `placeImages()` turns markers into `<img>` or drops them. Each
@@ -242,14 +239,12 @@ running the firmware at `72ca92fe`. The browser was jsdom; `PluginHost.js.inc`,
   deployed Worker straight to the SD card, including the 443 KB 12-image
   article that the 256 KB page path could not save. With the converter off,
   the page built text-only EPUBs and the address was kept.
-- Folders: the deployed Worker's `/lists` returned Home, Archive, Liked,
-  Bitcoin and Economics, and 401 for a wrong token. The simulated reader's
-  plugin showed the same picker, and Economics listed its article.
+- Folders, on firmware `d9764e2b`: the simulated reader's picker showed
+  Home, Archive, Liked, then Bitcoin and Economics from Instapaper's
+  `/folders`, with the converter on. Economics listed its one article
+  through `browse.url` with the folder's id.
 - Without the converter the simulated reader listed Home with its articles
-  straight from Instapaper, and Fetch failed with "Download failed". Turning
-  the converter on and off on the card switched `device.json` between
-  `lists_url` and the shipped lists, and the reader followed without a
-  restart.
+  straight from Instapaper, and Fetch failed with "Download failed".
 - Progress and archiving, end to end with a temporary bookmark (deleted
   afterwards): the card added the `reader.exit` handler, and after a restart
   the reader subscribed to it. The catalog download wrote the sidecar.
@@ -257,6 +252,13 @@ running the firmware at `72ca92fe`. The browser was jsdom; `PluginHost.js.inc`,
   Wi-Fi join the reader sent it, and Instapaper showed the bookmark archived
   with progress 1.0. An earlier `percent: "0"` event was sent and dropped
   without blocking the queue.
+- Last page, on firmware `d9764e2b` with the Worker running locally: Fetch
+  on the simulated reader saved a 23-page article and its sidecar, with no
+  end page. Leaving it on page 22 queued `percent: "91"`,
+  `end_percent: "95"`; on page 23, `percent: "96"`, `end_percent: "100"`.
+  A one-page article left on its page queued `end_percent: "100"`. The
+  events were kept queued rather than sent, so nothing was archived; the
+  Worker's handling of them is covered by `npm test`.
 - Duplicates, cleanup, highlights and covers, with a temporary bookmark
   (deleted afterwards) and highlight uploads intercepted so as not to use
   the free monthly five: after two reader downloads, syncing Archive found

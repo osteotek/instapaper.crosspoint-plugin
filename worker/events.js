@@ -9,8 +9,11 @@
 // (sleep.enter, then reader.exit); both calls are safe to repeat.
 
 const INSTAPAPER_API = 'https://www.instapaper.com/api/2';
-// Progress reaches 100% only on the "End of article" page the plugin adds to
-// every article (src/epub.js), so this means "turned to the end".
+// end_percent is measured at the bottom of the visible page and is 100 only
+// on the last one, so it means "read to the end". Firmware without it leaves
+// the literal "{event.end_percent}"; then only percent counts, which reaches
+// 100 on the reader's end-of-book screen (and on the "End of article" page
+// of articles downloaded by plugin 1.0.3 and older).
 const ARCHIVE_AT = 100;
 
 function jsonResponse(status, value) {
@@ -50,6 +53,7 @@ export async function readerExit(request, fetchImpl = fetch) {
   const percent = wholeNumber(body.percent, 0, 100);
   if (id === null) return jsonResponse(200, { ignored: 'not an Instapaper article' });
   if (percent === null) return jsonResponse(200, { ignored: 'no progress' });
+  const finished = Math.max(percent, wholeNumber(body.end_percent, 0, 100) || 0) >= ARCHIVE_AT;
   // event.ts is 0 when the reader's clock was never set.
   const ts = wholeNumber(body.ts, 1, 4102444800) || Math.floor(Date.now() / 1000);
 
@@ -62,13 +66,14 @@ export async function readerExit(request, fetchImpl = fetch) {
   const result = { id, percent, progress: false, archived: false };
 
   // Leaving an article at its start says nothing; do not reset progress
-  // made in another app.
-  if (percent > 0) {
-    const r = await call('/bookmarks/' + id, { progress: { percentage: percent / 100, timestamp: ts } });
+  // made in another app. A finished article is read to 100%, even though
+  // percent marks the top of its last page.
+  if (percent > 0 || finished) {
+    const r = await call('/bookmarks/' + id, { progress: { percentage: finished ? 1 : percent / 100, timestamp: ts } });
     if (!r.ok) return failure(r.status, 'progress');
     result.progress = true;
   }
-  if (percent >= ARCHIVE_AT) {
+  if (finished) {
     const r = await call('/bookmarks/' + id + '/move', { section: 'archive' });
     if (!r.ok) return failure(r.status, 'archive');
     result.archived = true;
