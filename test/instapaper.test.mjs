@@ -628,7 +628,7 @@ function gifBytes(width, height, interlaced) {
 // Runs the Worker's fetch handler with the network replaced: Instapaper URLs
 // get `answer`; image URLs get `images[url]` ([status, bytes, resized]), and
 // cover conversions `images['cover:' + url]`.
-async function callWorker(path, headers, answer, images = {}) {
+async function callWorker(path, headers, answer, images = {}, env = {}) {
   const realFetch = globalThis.fetch;
   const seen = [];
   globalThis.fetch = async (url, init) => {
@@ -642,7 +642,7 @@ async function callWorker(path, headers, answer, images = {}) {
     return new Response(bytes, { status, headers: resized ? { 'cf-resized': 'internal=ok' } : {} });
   };
   try {
-    return { response: await worker.fetch(new Request('https://w.example' + path, { headers })), seen };
+    return { response: await worker.fetch(new Request('https://w.example' + path, { headers }), env), seen };
   } finally {
     globalThis.fetch = realFetch;
   }
@@ -682,6 +682,18 @@ test('worker converts a bookmark to EPUB with the caller token', async () => {
   assert.match(readZip(new Uint8Array(await untitled.response.arrayBuffer()))[2].text, /<dc:title>Über Brücken<\/dc:title>/);
   assert.match(files[5].text, /<p><i>Ann · news\.example\.org<\/i><\/p><p>Die Brücke/);
   assert.doesNotMatch(files[5].text, /<img/);
+});
+
+test('worker with ALLOWED_TOKEN refuses other tokens', async () => {
+  const env = { ALLOWED_TOKEN: 'tok' };
+  const parsed = { metadata: { title: 'T' }, content: { body: '<p>Text</p>' } };
+  let r = await callWorker('/bookmarks/1.epub', { Authorization: 'Bearer tok' }, [200, parsed], {}, env);
+  assert.equal(r.response.status, 200);
+  r = await callWorker('/bookmarks/1.epub', { Authorization: 'Bearer other' }, [200, parsed], {}, env);
+  assert.equal(r.response.status, 403);
+  assert.equal(r.seen.length, 0, 'The Worker must not call Instapaper for another token.');
+  r = await callWorker('/', {}, [200, {}], {}, env);
+  assert.equal(r.response.status, 200);
 });
 
 test('worker reports missing tokens and articles without text', async () => {

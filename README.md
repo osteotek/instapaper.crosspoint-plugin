@@ -109,7 +109,10 @@ the `instapaper-epub` Worker in the Cloudflare dashboard under
 
 Anyone who knows the address can use the converter with their own Instapaper
 token, which counts against your Cloudflare free plan. Keep the address to
-yourself.
+yourself. To make the converter refuse other tokens, add a secret in
+**Workers & Pages > instapaper-epub > Settings > Variables and Secrets**. Use
+the name `ALLOWED_TOKEN` and your access token as the value. When you generate
+a new token, put the new token in this secret.
 
 ## Use on the reader
 

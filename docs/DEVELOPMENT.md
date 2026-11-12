@@ -59,7 +59,8 @@ Instapaper only returns article text as JSON, and `device.json` can only save
 a response as a file. The Worker closes that gap:
 `GET /bookmarks/{id}.epub?lang=…&title=…&url=…` with the reader's
 `Authorization: Bearer` token calls `/parse` with the same token and returns
-the EPUB. It keeps no state and holds no secrets. `GET /` answers with a
+the EPUB. It keeps no state. If the owner sets the optional secret
+`ALLOWED_TOKEN`, the Worker refuses all other tokens. `GET /` answers with a
 banner, which the web card checks before saving the address.
 
 - **Shared config.** The web card writes `config.json` with `token`, `lang`

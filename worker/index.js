@@ -8,8 +8,10 @@
 // it fetches Instapaper's parsed text for the bookmark and its images, and
 // returns them as an EPUB built by src/epub.js (the web card uses the
 // same module, without images). Images are converted for the reader by
-// images.js. It keeps no state and no secrets; every request runs with the
-// token the reader sends.
+// images.js. It keeps no state. Each request uses the token that the reader
+// sends. If the owner sets the optional secret ALLOWED_TOKEN, the Worker
+// refuses all other tokens. It does not refuse `GET /`, because the web card
+// uses `GET /` to check the address.
 //
 // All parameters are percent-encoded (the reader's {title_enc} and
 // {url_enc}). Without `title`, the article uses the page's own title.
@@ -111,7 +113,11 @@ export async function convert(request) {
 }
 
 export default {
-  fetch(request) {
+  fetch(request, env) {
+    const allowed = env && env.ALLOWED_TOKEN;
+    if (allowed && new URL(request.url).pathname !== '/' && request.headers.get('Authorization') !== 'Bearer ' + allowed) {
+      return textResponse(403, 'This converter refuses this Instapaper token.');
+    }
     return convert(request).catch((e) => textResponse(502, 'Conversion failed: ' + e.message));
   },
 };
